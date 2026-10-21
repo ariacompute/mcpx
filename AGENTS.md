@@ -142,6 +142,9 @@ make tidy       # go mod tidy
   `/etc/mcpx/mcpx.yaml`；compose 只把端口发布到宿主机回环，并带一个演示上游。
   容器内必须监听 `0.0.0.0`（`deploy/mcpx.docker.yaml` 已如此），`127.0.0.1` 在容器里
   不可达。缺少 `MCPX_TOKEN` 时容器会打印 `authentication misconfigured` 后退出。
+- 发布：`.github/workflows/release.yml` 由 `v*` tag 触发（校验 → 容器冒烟 → buildx 多架构
+  推 GHCR，`:1.2.3/:1.2/:1/:latest`）。版本戳必须走 `--build-arg`（`.dockerignore` 排除了
+  `.git`），改动 Dockerfile 的 `-X` 注入点时要同步该工作流与 Makefile。
 - 预编译路由在启动期完成：`tools/list` 顺序稳定、无每请求重复解析；改配置需重启。
 - 会话只存在内存：重启即失效，客户端需重新 `initialize`（这不是缺陷，是设计）。
 
@@ -151,5 +154,5 @@ make tidy       # go mod tidy
 | --- | --- | --- |
 | v1 | MCP 网关：YAML/JSON 配置、HTTP + stdio、operation 工具 + 受限透传、Bearer 鉴权、限长/超时/前缀白名单、端到端测试 | 已实现 |
 | v1.1 | header 参数允许连字符（大小写不敏感去重）、`/` 前缀覆盖全部路径、覆盖率提升到 91.8%、新增 `make cover` | 已实现 |
-| v1.2 | 容器化：多阶段 Dockerfile、compose（网关 + 演示上游）、`deploy/mcpx.docker.yaml`、`make docker-build/compose-*` | 已实现 |
+| v1.2 | 容器化：多阶段 Dockerfile、compose（网关 + 演示上游）、`deploy/mcpx.docker.yaml`、`make docker-build/compose-*`、GHCR 发布工作流（tag → 校验 → 冒烟 → 多架构镜像） | 已实现 |
 | 后续 | 可选指标端点、上游重试与熔断 | 未开始 |

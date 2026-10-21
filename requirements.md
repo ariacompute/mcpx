@@ -223,6 +223,11 @@ POST/PUT/PATCH/DELETE；`body_param` 必须指向 `in=body` 的参数。
   root 运行；compose 使用只读根文件系统、`cap_drop: ALL`、`no-new-privileges`，端口
   默认只绑宿主机 `127.0.0.1`，配置从 `deploy/mcpx.docker.yaml` 只读挂载到
   `/etc/mcpx/mcpx.yaml`。
+- **发布**：`v*` tag 触发 `.github/workflows/release.yml` —— 先做代码校验（gofmt / vet /
+  `go test -race`），再在真实容器里跑 `initialize` + `tools/list` 冒烟，最后以 buildx
+  推送 `linux/amd64,linux/arm64` 到 `ghcr.io/<owner>/mcpx`，版本 tag 派生
+  `:1.2.3/:1.2/:1/:latest`。发布物必须带构建戳（版本戳经 build-arg 注入），因此镜像内
+  `mcpx version` 与 `/healthz` 可追溯。
 
 ## 7. 验收标准
 
@@ -237,6 +242,8 @@ POST/PUT/PATCH/DELETE；`body_param` 必须指向 `in=body` 的参数。
 - [x] 错误语义：`-32700/-32600/-32601/-32602/-32603`、401/403/400/404/405/413/415/202。
 - [x] 容器：`docker build` 成功；`docker compose up -d --build` 后 `/healthz` 健康、
       `tools/call demo_hello` 返回演示上游正文；`docker compose down` 无需 token 也能清理。
+- [x] 发布工作流：YAML 可解析，`verify → meta → smoke → image` 四段依赖关系与 tag 派生
+      规则完整（真实 GitHub Actions 运行待首次推 tag 验证；GHCR 包默认私有，需人工确认可见性）。
 - [x] 文档同步：`README.md`、`README_cn.md`、`requirements.md`、`task.md`、`AGENTS.md`
       与实现一致。
 
@@ -246,4 +253,4 @@ POST/PUT/PATCH/DELETE；`body_param` 必须指向 `in=body` 的参数。
 | --- | --- |
 | v1 | 首个实现：配置/协议/双传输/两种工具粒度/安全模型/端到端测试 |
 | v1.1 | header 参数允许连字符并做大小写不敏感去重；根前缀 `/` 覆盖全部路径；覆盖率 75% → 91.8%；新增 `make cover` / `cover-html`；文档三件套补齐 |
-| v1.2 | 容器化：多阶段 Dockerfile（非 root、健康检查、版本戳）、compose（网关 + 演示上游、只读根文件系统、回环发布）、`deploy/mcpx.docker.yaml`、`.env.example`、`make docker-build/compose-*` |
+| v1.2 | 容器化：多阶段 Dockerfile（非 root、健康检查、版本戳）、compose（网关 + 演示上游、只读根文件系统、回环发布）、`deploy/mcpx.docker.yaml`、`.env.example`、`make docker-build/compose-*`、`.github/workflows/release.yml`（tag 触发：校验 → 容器冒烟 → 多架构推 GHCR） |

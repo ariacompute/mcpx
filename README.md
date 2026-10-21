@@ -37,7 +37,7 @@ well-formed. Any failure is reported with its location and the process refuses t
 ### Docker Compose
 
 ```bash
-cp .env.example .env        # set MCPX_TOKEN, e.g. openssl rand -hex 24
+cp .env.example .env  # set MCPX_TOKEN, e.g. openssl rand -hex 24
 docker compose up -d --build
 curl -s http://127.0.0.1:8848/healthz
 ```
@@ -51,6 +51,17 @@ file with `MCPX_CONFIG_FILE`, keeping the `0.0.0.0` listen address.
 The published port is bound to `127.0.0.1` on the host by default; put a reverse proxy in
 front before changing `MCPX_BIND`. Without `MCPX_TOKEN` the process logs
 `authentication misconfigured` and exits, while `docker compose down` keeps working.
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`: `gofmt`/`go vet`/`go test -race`,
+a container smoke test (`initialize` then `tools/list` over real HTTP), then a multi-arch
+push to GHCR. `v1.2.3` publishes `:1.2.3`, `:1.2`, `:1` and `:latest` for linux/amd64 and
+linux/arm64, with the build stamp baked in so `/healthz` and `mcpx version` report it.
+Without compose:
+
+```bash
+docker run --rm -e MCPX_TOKEN=$(openssl rand -hex 24) \
+  -p 127.0.0.1:8848:8848 ghcr.io/<owner>/mcpx:1.2.3
+```
 
 ## Configuration
 

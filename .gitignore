@@ -4,3 +4,4 @@ coverage.out
 *.local.json
 .env
 .DS_Store
+*.swp

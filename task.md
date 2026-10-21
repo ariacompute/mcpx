@@ -127,6 +127,15 @@
   `docker build` 成功；`docker compose up -d --build` 后 `/healthz` 返回
   `tools:1`，`tools/call demo_hello` 返回 `hello from the mcpx demo upstream`；
   `docker compose down` 正常清理。
+- `.github/workflows/release.yml`：`v*` tag（或 `workflow_dispatch` 指定版本）触发三阶段
+  —— `verify`（`gofmt -l` / `go vet` / `go test -race`）、`meta`（去 `v` 前缀的版本 +
+  短 commit + UTC 时间 + 小写 GHCR 路径）、`smoke`（本地 `docker build` 后用真实容器跑
+  `/healthz` → `initialize` → 带会话 `tools/list` 断言 `demo_hello`），最后 `image` 用
+  buildx 推 `linux/amd64,linux/arm64` 到 `ghcr.io/<owner>/mcpx`，tag 由版本派生
+  （`1.2.3` → `:1.2.3 :1.2 :1 :latest`），带 OCI labels、provenance 与 SBOM。
+  版本戳经 `--build-arg` 传入（`.dockerignore` 排除 `.git`），并断言 `mcpx version` 输出。
+- 该工作流的边界：本地没有 GitHub runner，**只做了 YAML 解析校验**（`yaml.safe_load`），
+  未在真实 Actions 环境跑过；首次推 tag 时需人工确认镜像可见性（GHCR 包默认私有）。
 
 ## 测试期发现并修复的问题
 

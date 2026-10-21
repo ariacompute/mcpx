@@ -1,0 +1,225 @@
+# Tag-driven release: verify the module, smoke-test the image, then publish a
+# multi-arch image to GHCR.
+#
+#   git tag v1.2.0 && git push origin v1.2.0
+#
+# Publishes (:1.2.0, :1.2, :1, :latest) for linux/amd64 and linux/arm64. A manual
+# `workflow_dispatch` run does the same for an explicit version, which is the way
+# to backfill a tag whose push event was missed.
+#
+# The build stamp is passed in as build args rather than read from .git: the
+# Docker context excludes .git (see .dockerignore), so `mcpx version` inside the
+# image would otherwise always report "dev".
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, without the leading v (e.g. 1.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+# One release at a time; never cancel a half-pushed image.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: "1.27"
+
+jobs:
+  # Fail fast on tests and vet before anything reaches a registry.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  # Derived once so the smoke test and the publish step cannot disagree.
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
+      date: ${{ steps.version.outputs.date }}
+      image: ${{ steps.version.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: version
+        name: Resolve build stamp
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            raw="${{ inputs.version }}"
+          else
+            raw="${GITHUB_REF_NAME}"
+          fi
+
+          version="${raw#v}"
+          if [ -z "$version" ]; then
+            echo "empty version (tag: ${raw:-<none>})" >&2
+            exit 1
+          fi
+
+          # GHCR requires a lowercase path; owners may contain capitals.
+          owner=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          image="ghcr.io/${owner}/mcpx"
+
+          {
+            echo "version=$version"
+            echo "commit=$(git rev-parse --short=7 HEAD)"
+            echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "image=$image"
+          } >> "$GITHUB_OUTPUT"
+
+  # Builds amd64 locally and drives a real MCP handshake, so a release cannot
+  # ship an image that starts but cannot answer initialize/tools/list.
+  smoke:
+    needs: [meta, verify]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: |
+          docker build \
+            --build-arg VERSION=${{ needs.meta.outputs.version }} \
+            --build-arg COMMIT=${{ needs.meta.outputs.commit }} \
+            --build-arg DATE=${{ needs.meta.outputs.date }} \
+            --build-arg GOPROXY=https://proxy.golang.org,direct \
+            -t mcpx:ci .
+
+      - name: Assert the build stamp is baked in
+        run: |
+          docker run --rm mcpx:ci version | tee stamp.txt
+          grep -q "mcpx ${{ needs.meta.outputs.version }} (${{ needs.meta.outputs.commit }})" stamp.txt
+
+      - name: MCP handshake against the container
+        run: |
+          set -euo pipefail
+          token=ci-smoke-token
+
+          docker run -d --name mcpx-ci \
+            -e MCPX_TOKEN="$token" \
+            -p 8848:8848 \
+            mcpx:ci
+
+          cleanup() { docker logs mcpx-ci || true; docker rm -f mcpx-ci || true; }
+          trap cleanup EXIT
+
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8848/healthz >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8848/healthz
+
+          headers=$(curl -si -X POST http://127.0.0.1:8848/mcp \
+            -H "Authorization: Bearer $token" \
+            -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}')
+          echo "$headers"
+
+          sid=$(echo "$headers" | tr -d '\r' | awk '/^Mcp-Session-Id:/{print $2}')
+          test -n "$sid"
+
+          echo "$headers" | grep -q '"protocolVersion"'
+
+          tools=$(curl -fsS -X POST http://127.0.0.1:8848/mcp \
+            -H "Authorization: Bearer $token" \
+            -H 'Content-Type: application/json' \
+            -H "Mcp-Session-Id: $sid" \
+            -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')
+          echo "$tools"
+          echo "$tools" | grep -q '"demo_hello"'
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker logs mcpx-ci || true
+
+  # Multi-arch publish. No `--load`: buildx keeps the result in the cache and
+  # pushes both platforms at once.
+  image:
+    needs: [meta, verify, smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Derive :1.2.3, :1.2, :1 and :latest from the released version. Tags stay
+      # immutable: only a newer tag moves :1.2 / :1 / :latest.
+      - id: tags
+        name: Derive image tags
+        run: |
+          set -euo pipefail
+          image="${{ needs.meta.outputs.image }}"
+          version="${{ needs.meta.outputs.version }}"
+
+          tags="${image}:${version}"
+          if [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
+            tags="${tags},${image}:${BASH_REMATCH[1]}.${BASH_REMATCH[2]},${image}:${BASH_REMATCH[1]},${image}:latest"
+          fi
+
+          echo "tags=$tags"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            VERSION=${{ needs.meta.outputs.version }}
+            COMMIT=${{ needs.meta.outputs.commit }}
+            DATE=${{ needs.meta.outputs.date }}
+            GOPROXY=https://proxy.golang.org,direct
+          labels: |
+            org.opencontainers.image.title=mcpx
+            org.opencontainers.image.description=MCP gateway for arbitrary HTTP services
+            org.opencontainers.image.version=${{ needs.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.meta.outputs.commit }}
+            org.opencontainers.image.licenses=MIT
+          provenance: true
+          sbom: true
+
+      - name: Summary
+        run: echo "published ${{ steps.tags.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
