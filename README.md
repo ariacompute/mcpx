@@ -1,39 +1,44 @@
 # mcpx
 
-MCP 网关：用一份声明式配置，把**任意 HTTP 服务**发布成 MCP 工具，同时对外提供 MCP
-服务端出口（Streamable HTTP 与 stdio）。名字沿用 nginx 那种短小写风格 —— nginx 是
-"engine-x"，这里是 "MCP-x"。
+English | [中文](README_cn.md)
+
+An MCP gateway: one declarative config publishes **arbitrary HTTP services** as MCP tools,
+and exposes them through an MCP server (Streamable HTTP and stdio). The name follows
+nginx's short-lowercase style — nginx is "engine-x", this is "MCP-x".
 
 ```
-MCP 客户端 ──HTTP POST /mcp──┐
-            ──stdio NDJSON───┤ mcpx ──HTTP──> 你的 HTTP 服务（任意语言/框架）
-                             │  ├─ 每个 operation 一个具名工具
-                             │  └─ 每个 upstream 一个受限透传工具
+MCP client ──HTTP POST /mcp──┐
+           ──stdio NDJSON────┤ mcpx ──HTTP──> your HTTP service (any language/framework)
+                            │  ├─ one named tool per operation
+                            │  └─ one restricted passthrough tool per upstream
 ```
 
-和 nginx 的关系是**形态参照**而不是依赖：upstream 声明地址、前缀白名单决定"能去哪儿"、
-限长与超时决定"能待多久"，但协议换成了 MCP，配置换成了 YAML。网关不内置 TLS、不缓存、
-不热重载 —— 这三件事交给前置 nginx 与一次重启。
+The relationship to nginx is a **shape reference, not a dependency**: an upstream names the
+address, the prefix allowlist decides where a call may go, and limits plus timeouts decide
+how long it may take — but the protocol is MCP and the config is YAML. The gateway does not
+terminate TLS, cache, or hot-reload; that is a fronting nginx and a restart.
 
-## 快速开始
+## Quick start
 
 ```bash
-make build                 # 产出 bin/mcpx（带 git 版本戳）
+make build                 # produces bin/mcpx with a git build stamp
 cp mcpx.yaml mcpx.local.yaml
-export MCPX_TOKEN=...      # MCP 端点的 bearer token
-export PETSTORE_TOKEN=...  # 上游凭据（只写环境变量名）
-./bin/mcpx check -c mcpx.local.yaml    # 只校验配置并列出工具
-./bin/mcpx serve -c mcpx.local.yaml    # 默认命令，监听 127.0.0.1:8848
-./bin/mcpx stdio -c mcpx.local.yaml    # 本地客户端直挂
+export MCPX_TOKEN=...      # bearer token for the MCP endpoint
+export PETSTORE_TOKEN=...  # upstream credential (config stores the variable name only)
+./bin/mcpx check -c mcpx.local.yaml    # validate the config and list the tools
+./bin/mcpx serve -c mcpx.local.yaml    # default command, listens on 127.0.0.1:8848
+./bin/mcpx stdio -c mcpx.local.yaml    # for local clients that launch a process
 ```
 
-`check` 通过即代表：URL 合法、路径模板可编译、工具名无冲突、透传前缀非空、凭据变量名
-合法。任何一项失败都会带着位置报错并拒绝启动。
+A passing `check` means every URL is valid, every path template compiles, tool names do not
+collide, the passthrough allowlist is non-empty, and every credential variable name is
+well-formed. Any failure is reported with its location and the process refuses to start.
 
-## 配置
+## Configuration
 
-主配置 YAML，**同结构的 JSON 也接受**（同一套解码路径）。未知字段直接报错，避免把
-`allow_prefixs` 这种拼写错误静默解释成"不限制"。
+The main file is YAML; **JSON with the same shape is accepted** (one decoding path).
+Unknown fields are rejected outright, so a typo such as `allow_prefixs` cannot be silently
+interpreted as "unrestricted".
 
 ```yaml
 server:
@@ -41,8 +46,8 @@ server:
   path: /mcp
   auth: {scheme: bearer, token_env: MCPX_TOKEN}   # none | bearer
   protocol_versions: ["2025-06-18", "2025-03-26"]
-  allowed_origins: ["https://app.example.com"]    # 留空 = 只允许 loopback Origin
-  instructions: "..."                             # 可选，initialize 时回给客户端
+  allowed_origins: ["https://app.example.com"]    # empty = loopback origins only
+  instructions: "..."                             # optional, returned by initialize
   max_request_bytes: 1048576
   session_ttl: 30m
   shutdown_grace: 15s
@@ -54,7 +59,7 @@ defaults:
 
 upstreams:
   - name: petstore
-    base_url: https://petstore.example.com      # 可带路径前缀，如 /api
+    base_url: https://petstore.example.com      # may include a path prefix, e.g. /api
     headers: {X-Env: prod}
     auth: {scheme: bearer, token_env: PETSTORE_TOKEN}
     timeout: 10s
@@ -77,42 +82,45 @@ upstreams:
           - {name: pet, in: body, required: true}
     passthrough:
       enabled: true
-      name: petstore_request       # 默认 <upstream>_request
-      methods: [GET, POST]         # 默认 [GET]
-      allow_prefixes: ["/api/v1"]  # 默认继承 upstream.allow_prefixes
+      name: petstore_request       # defaults to <upstream>_request
+      methods: [GET, POST]         # defaults to [GET]
+      allow_prefixes: ["/api/v1"]  # defaults to upstream.allow_prefixes
 ```
 
-### 字段语义
+### Field reference
 
-| 字段 | 说明 |
+| Field | Meaning |
 | --- | --- |
-| `server.auth` | `none` 或 `bearer`。`bearer` 时启动必须能从 `token_env` 读到非空值，否则拒绝启动 |
-| `server.allowed_origins` | 浏览器 `Origin` 白名单；`"*"` 放行全部；留空只允许 `localhost/127.0.0.1/[::1]` |
-| `upstream.base_url` | 必须是 `http(s)://host`，不允许内嵌凭据/查询串；配置里的 path 会拼在其路径之后 |
-| `upstream.headers` | 每个请求都带的静态头；禁止 CR/LF |
-| `upstream.auth` | `none` / `bearer` / `header`（配 `header_name`）；只存环境变量名 |
-| `operation.path` | 必须 `/` 开头，支持 `{name}` 占位；禁止 `.`/`..`、`?`、`#`、`%`、空白 |
-| `operation.params[].in` | `path` / `query` / `header` / `body`，缺省 `query` |
-| `operation.body_param` | 指定哪个参数作为请求体；缺省时自动取唯一的 `in=body` 参数 |
-| `operation.input_schema` | 覆盖自动派生的 JSON Schema，仅影响展示，不影响实际绑定 |
-| `passthrough` | 受限通用工具；`allow_prefixes` 为空时启动失败（宁可不可用，也不当开放代理） |
+| `server.auth` | `none` or `bearer`. With `bearer`, a non-empty value must be readable from `token_env` at startup, otherwise the process refuses to start. |
+| `server.allowed_origins` | Browser `Origin` allowlist; `"*"` allows everything; empty allows only `localhost/127.0.0.1/[::1]`. |
+| `upstream.base_url` | Must be `http(s)://host`; embedded credentials and query strings are rejected. Configured paths are appended to its path. |
+| `upstream.headers` | Static headers sent with every request; CR/LF is rejected. |
+| `upstream.auth` | `none` / `bearer` / `header` (with `header_name`); only the environment variable name is stored. |
+| `operation.path` | Must start with `/` and may contain `{name}` placeholders; `.`/`..`, `?`, `#`, `%` and whitespace are rejected. |
+| `operation.params[].in` | `path` / `query` / `header` / `body`, defaulting to `query`. |
+| `operation.body_param` | Which parameter becomes the request body; defaults to the single `in=body` parameter. |
+| `operation.input_schema` | Overrides the derived JSON Schema for display only; argument binding is unaffected. |
+| `passthrough` | The restricted generic tool; an empty `allow_prefixes` is a startup failure (unavailable beats an open proxy). |
 
-工具名规则：`<upstream>_<operation>`，大小写不敏感唯一；冲突、非法字符都会启动失败。
-`upstream.name` 必须匹配 `^[a-z][a-z0-9_-]{0,31}$`。
+Tool names are `<upstream>_<operation>`, unique case-insensitively; collisions and illegal
+characters are startup failures. `upstream.name` must match `^[a-z][a-z0-9_-]{0,31}$`.
 
-### 参数如何变成请求
+### How an argument becomes a request
 
-- `path`：按 `{name}` 替换，值经 `url.PathEscape`；值本身是 `.`/`..` 时拒绝。
-- `query`：数组值展开为重复参数；数字/布尔按字面量渲染（`2` 而不是 `2.000000`）。
-- `header`：参数名就是头名（允许 `X-Trace` 这类连字符写法，大小写不敏感去重）；
-  `Authorization`、`Cookie`、`Host`、`Content-Length` 等保留头一律拒绝，避免调用方
-  绕过配置里的凭据。
-- `body`：字符串原样发送（`text/plain`），其它类型 JSON 序列化（`application/json`）；
-  未声明 `schema.type` 的 body 参数接受任意 JSON 值。
-- 未声明的参数、缺失的必填参数、类型不匹配、枚举越界都会返回 `isError: true` 的结果，
-  并且**不会**发往上游。
+- `path`: `{name}` placeholders are replaced with `url.PathEscape`d values; a value of `.`
+  or `..` is refused.
+- `query`: array values expand to repeated parameters; numbers and booleans render literally
+  (`2`, not `2.000000`).
+- `header`: the parameter name is the header name (hyphenated names such as `X-Trace` are
+  allowed and deduplicated case-insensitively). Reserved headers — `Authorization`, `Cookie`,
+  `Host`, `Content-Length` and friends — are refused so a caller cannot bypass the credential
+  configured for the upstream.
+- `body`: strings are sent verbatim (`text/plain`), everything else is JSON encoded
+  (`application/json`); a body parameter without `schema.type` accepts any JSON value.
+- Undeclared arguments, missing required arguments, type mismatches and enum violations all
+  produce an `isError: true` result and **never reach the upstream**.
 
-## 接入方式
+## Connecting
 
 ### Streamable HTTP
 
@@ -123,11 +131,12 @@ curl -sS http://127.0.0.1:8848/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"curl","version":"1"}}}'
 ```
 
-响应头 `Mcp-Session-Id` 必须出现在后续每个请求上；`notifications/*` 返回 `202` 无正文；
-`DELETE /mcp` 终止会话；`GET /mcp` 返回 `405`（本网关不主动推送）。`/healthz` 不需要鉴权，
-返回版本、工具数与会话数。
+The `Mcp-Session-Id` response header must be sent on every subsequent request;
+`notifications/*` answers `202` with no body; `DELETE /mcp` terminates the session;
+`GET /mcp` answers `405` (this gateway never opens server-initiated streams). `/healthz`
+requires no credentials and reports the version, tool count and session count.
 
-MCP 客户端配置片段（例如 Claude Desktop / IDE 插件）：
+MCP client snippet (Claude Desktop, IDE plugins, agent runtimes):
 
 ```json
 {
@@ -154,67 +163,73 @@ MCP 客户端配置片段（例如 Claude Desktop / IDE 插件）：
 }
 ```
 
-stdout 是协议通道，所有日志走 stderr；读到 EOF 即正常退出。
+stdout belongs to the protocol and every log line goes to stderr; EOF is a clean shutdown.
 
-## 安全模型
+## Security model
 
-- 默认只监听 `127.0.0.1`；对外暴露请前置 nginx 并启用 `server.auth`。
-- 路径永远由"配置里的 base 路径 + 配置里的模板"拼出：拒绝绝对 URL、`//host`、`..`、
-  跨主机重定向；透传路径按**段**匹配前缀（`/api/v1` 不会放行 `/api/v1x`）。
-- 请求体、响应体、单次调用都有上限与超时；响应被截断时结果里明确标注。
-- 凭据只以环境变量名出现在配置中，运行时读取；日志与错误消息不打印 token，
-  敏感头统一脱敏。
-- 上游非 2xx 不抛协议错误，而是 `isError: true` + 状态码 + 截断后的正文，
-  让模型自己决定下一步。
+- Listens on `127.0.0.1` by default; front it with nginx and enable `server.auth` before
+  exposing it.
+- A request path is always "configured base path + configured template": absolute URLs,
+  `//host`, `..` and cross-origin redirects are refused. Passthrough paths are matched by
+  **segment**, so `/api/v1` never allows `/api/v1x`.
+- Request bodies, response bodies and single calls all have limits and timeouts; a truncated
+  response is marked as such in the result.
+- Credentials appear in the config only as environment variable names and are read at call
+  time; logs and error messages never print them, and sensitive headers are redacted.
+- A non-2xx upstream response is not a protocol error: it becomes an `isError: true` result
+  carrying the status and the (truncated) body, so the model can decide what to do next.
 
-## 错误语义
+## Error semantics
 
-| 场景 | 返回 |
+| Situation | Response |
 | --- | --- |
-| JSON 解析失败 | `-32700`，HTTP 400 |
-| `jsonrpc` 不是 `2.0` / 缺 `method` | `-32600` |
-| 未知方法 | `-32601` |
-| 未知工具 / 坏游标 / 参数结构错误 | `-32602` |
-| 上游非 2xx、超时、越权路径、参数校验失败 | `tools/call` 的 `isError: true` 结果 |
-| 未鉴权 / Origin 拒绝 / 会话缺失 / 会话过期 / 请求过大 | HTTP 401 / 403 / 400 / 404 / 413 |
+| JSON cannot be parsed | `-32700`, HTTP 400 |
+| `jsonrpc` is not `2.0` / `method` missing | `-32600` |
+| Unknown method | `-32601` |
+| Unknown tool / bad cursor / malformed params | `-32602` |
+| Upstream non-2xx, timeout, out-of-prefix path, argument validation | `tools/call` result with `isError: true` |
+| Missing credentials / rejected Origin / missing or expired session / oversized request | HTTP 401 / 403 / 400 / 404 / 413 |
 
-## 开发
+## Development
 
 ```bash
-make build      # bin/mcpx（-ldflags 注入 version/commit/date）
+make build      # bin/mcpx (version/commit/date injected via -ldflags)
 make test       # go test -race ./...
 make vet        # go vet ./...
-make cover      # 全仓覆盖率汇总（coverage.out，已 gitignore）
-make cover-html # 生成并在浏览器里看 HTML 报告
-make check      # 用仓库里的示例配置做一次体检
-make run        # 前台运行 HTTP
-make stdio      # 前台运行 stdio
+make cover      # whole-repo coverage summary (coverage.out, gitignored)
+make cover-html # generate and open the HTML coverage report
+make check      # validate the example config and list its tools
+make run        # run the HTTP endpoint in the foreground
+make stdio      # run the stdio transport in the foreground
 ```
 
-测试全离线（`httptest` + `io.Pipe`），`go test -race ./...` 全绿；当前语句覆盖率约
-92%（`config` / `mcp` / `tool` / `upstream` / 两个 transport 均在 90% 上下，CLI 与
-端到端另有覆盖）。新增行为请同时补正常与异常路径用例 —— 尤其是路径穿越、前缀越界、
-凭据缺失和超时这几类，它们一旦回归就是安全问题。
+Tests are fully offline (`httptest` + `io.Pipe`) and `go test -race ./...` is green;
+statement coverage is currently about 92% (config, mcp, tool, upstream and both transports
+sit around 90%, with the CLI and end-to-end suite covering the rest). New behaviour needs
+both success and failure cases — especially path traversal, prefix escapes, missing
+credentials and timeouts, where a regression is a security bug rather than a broken feature.
 
-目录：
+Layout:
 
 ```
-cmd/mcpx            CLI：serve / stdio / check / version
-internal/config     配置解码、默认值、校验
-internal/tool       工具抽象、注册表、schema 派生与参数校验
-internal/mcp        JSON-RPC 信封、协议方法、错误码
-internal/upstream   HTTP 客户端、路径模板、operation、受限透传、脱敏
-internal/gateway    配置 → 工具索引、调用分发
-internal/transport  httpsrv（会话/鉴权/202/DELETE）、stdio（行循环）
-tests               httptest 端到端
+cmd/mcpx            CLI: serve / stdio / check / version
+internal/config     config decoding, defaults, validation
+internal/tool       tool abstraction, registry, schema derivation, argument validation
+internal/mcp        JSON-RPC envelope, protocol methods, error codes
+internal/upstream   HTTP client, path templates, operations, restricted passthrough, redaction
+internal/gateway    config -> tool index, call dispatch
+internal/transport  httpsrv (sessions/auth/202/DELETE), stdio (line loop)
+tests               httptest end-to-end
 ```
 
-唯一第三方依赖是 `gopkg.in/yaml.v3`（同时解析 YAML 与 JSON），其余全部标准库。
+The only third-party dependency is `gopkg.in/yaml.v3` (it parses both YAML and JSON);
+everything else is the standard library.
 
-## 明确不做
+## Explicitly out of scope
 
-- 配置热重载（重启即可，避免读到半写文件）
-- 多租户与配额
-- 请求缓存（网关不替上游做一致性决策）
-- 内置 TLS（交给前置 nginx）
-- 动态发现上游（工具集在启动时固定，`tools/list` 因此稳定可缓存）
+- Config hot reload (restart instead; never read a half-written file)
+- Multi-tenancy and quotas
+- Request caching (the gateway does not make consistency decisions for an upstream)
+- Built-in TLS (use a fronting nginx)
+- Dynamic upstream discovery (the tool set is fixed at startup, which keeps `tools/list`
+  stable and cacheable)
