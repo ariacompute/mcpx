@@ -27,6 +27,7 @@ internal/transport/httpsrv   Streamable HTTP（会话、鉴权、Origin、/healt
 internal/transport/stdio     NDJSON 行循环（stdout 仅协议）
 internal/version  版本戳（-ldflags 注入）
 tests             httptest 端到端
+deploy/           容器专用配置（0.0.0.0 监听 + 演示上游）
 ```
 
 依赖方向（单向）：
@@ -113,6 +114,10 @@ make cover-html # HTML 覆盖率报告
 make check      # 用 mcpx.yaml 做配置体检并列出工具
 make run        # 前台跑 HTTP
 make stdio      # 前台跑 stdio
+make docker-build   # 本地构建镜像（--network=host，便于走宿主代理）
+make compose-config # 只渲染 compose，不构建
+make compose-up     # 构建并启动网关 + 演示上游
+make compose-down   # 停止并清理
 make tidy       # go mod tidy
 ```
 
@@ -133,7 +138,10 @@ make tidy       # go mod tidy
 - **不新增第三方依赖**（除 `yaml.v3`）；需要新能力先用标准库实现，确有必要再讨论。
 - 不支持：配置热重载、多租户/配额、请求缓存、内置 TLS、动态发现上游、服务端 SSE 推送。
   对外暴露请前置 nginx 并开启 `server.auth`。
-- `Dockerfile` 与 `docker-compose.yml` 目前是空占位，**尚未容器化**。
+- 容器：多阶段构建（静态二进制 + 非 root alpine，uid 10001），运行配置固定挂到
+  `/etc/mcpx/mcpx.yaml`；compose 只把端口发布到宿主机回环，并带一个演示上游。
+  容器内必须监听 `0.0.0.0`（`deploy/mcpx.docker.yaml` 已如此），`127.0.0.1` 在容器里
+  不可达。缺少 `MCPX_TOKEN` 时容器会打印 `authentication misconfigured` 后退出。
 - 预编译路由在启动期完成：`tools/list` 顺序稳定、无每请求重复解析；改配置需重启。
 - 会话只存在内存：重启即失效，客户端需重新 `initialize`（这不是缺陷，是设计）。
 
@@ -143,4 +151,5 @@ make tidy       # go mod tidy
 | --- | --- | --- |
 | v1 | MCP 网关：YAML/JSON 配置、HTTP + stdio、operation 工具 + 受限透传、Bearer 鉴权、限长/超时/前缀白名单、端到端测试 | 已实现 |
 | v1.1 | header 参数允许连字符（大小写不敏感去重）、`/` 前缀覆盖全部路径、覆盖率提升到 91.8%、新增 `make cover` | 已实现 |
-| 后续 | 容器化（Dockerfile/compose）、可选指标端点、上游重试策略 | 未开始 |
+| v1.2 | 容器化：多阶段 Dockerfile、compose（网关 + 演示上游）、`deploy/mcpx.docker.yaml`、`make docker-build/compose-*` | 已实现 |
+| 后续 | 可选指标端点、上游重试与熔断 | 未开始 |

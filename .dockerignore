@@ -1,0 +1,21 @@
+# mcpx build context: the image only needs go.mod/go.sum, cmd/, internal/ and
+# the container config under deploy/.
+
+.git
+.github
+.gitignore
+.env
+.env.*
+
+# Local build and test artefacts.
+bin/
+coverage.out
+coverage.html
+*.local.yaml
+
+# Docs, tests and the compose file are not part of the image.
+*.md
+tests/
+Dockerfile
+docker-compose.yml
+.dockerignore

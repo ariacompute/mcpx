@@ -1,0 +1,88 @@
+# mcpx — one gateway container plus a tiny demo upstream.
+#
+#   cp .env.example .env && ${EDITOR:-vi} .env   # set MCPX_TOKEN
+#   docker compose up -d --build
+#   curl -s http://127.0.0.1:8848/healthz
+#
+# Without MCPX_TOKEN the gateway logs "authentication misconfigured" and exits;
+# `docker compose logs mcpx` shows it. `down`, `ps` and `logs` never require the
+# token, so a misconfigured stack is still easy to clean up.
+#
+# The gateway mounts deploy/mcpx.docker.yaml read-only. To use your own config
+# point MCPX_CONFIG_FILE at it (the file must listen on 0.0.0.0 inside the
+# container) and `docker compose restart mcpx`.
+#
+# Call a tool (the session id from initialize must be sent on every request):
+#
+#   SID=$(curl -si -X POST http://127.0.0.1:8848/mcp \
+#     -H "Authorization: Bearer $MCPX_TOKEN" -H 'Content-Type: application/json' \
+#     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
+#     | tr -d '\r' | awk '/^Mcp-Session-Id:/{print $2}')
+#   curl -s -X POST http://127.0.0.1:8848/mcp \
+#     -H "Authorization: Bearer $MCPX_TOKEN" -H 'Content-Type: application/json' \
+#     -H "Mcp-Session-Id: $SID" \
+#     -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"demo_hello"}}'
+#
+# Nothing is persisted: sessions live in memory, so a restart just costs clients
+# one initialize.
+services:
+  mcpx:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Outbound proxy for `go mod download`. Empty => direct internet.
+        BUILD_PROXY: ${BUILD_PROXY:-}
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+        # Mirror root for the runtime stage's apk add.
+        ALPINE_MIRROR: ${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org}
+        # Reported by /healthz and `mcpx version`. `make compose-up` fills these.
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-unknown}
+        DATE: ${DATE:-unknown}
+    image: ${MCPX_IMAGE:-mcpx}:${VERSION:-dev}
+    container_name: mcpx
+    command: ["serve", "-c", "/etc/mcpx/mcpx.yaml"]
+    environment:
+      # Read by server.auth.token_env. Compose picks it up from the shell or a
+      # `.env` file next to this file; when it is empty the process logs
+      # "authentication misconfigured" and exits instead of running open.
+      MCPX_TOKEN: ${MCPX_TOKEN:-}
+      # Upstream credentials referenced by mounted configs, read at call time.
+      DEMO_TOKEN: ${DEMO_TOKEN:-}
+    ports:
+      # Loopback by default: front it with nginx (or set MCPX_BIND=0.0.0.0 behind
+      # a firewall) before exposing it.
+      - "${MCPX_BIND:-127.0.0.1}:${MCPX_PORT:-8848}:8848"
+    volumes:
+      - ${MCPX_CONFIG_FILE:-./deploy/mcpx.docker.yaml}:/etc/mcpx/mcpx.yaml:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=1m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      - demo
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8848/healthz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Demo upstream referenced by deploy/mcpx.docker.yaml. It exists so a fresh
+  # `docker compose up` yields a callable tool; delete this service and the
+  # `demo` upstream when you point the gateway at real services.
+  demo:
+    image: hashicorp/http-echo:1.0
+    container_name: mcpx-demo
+    command: ["-listen=:5678", "-text=hello from the mcpx demo upstream"]
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped

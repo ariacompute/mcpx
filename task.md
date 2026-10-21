@@ -102,6 +102,32 @@
 - Git：`git init -b main`，提交「feat: add MCP gateway…」与
   「test: raise statement coverage to 92%」。
 
+## 阶段 9 — 容器化
+
+- `Dockerfile`：两阶段。`golang:1.27-alpine` 构建静态二进制（`CGO_ENABLED=0`、
+  `-trimpath -s -w`、`-X` 注入 `VERSION/COMMIT/DATE`）；`alpine:3.21` 运行时安装
+  `ca-certificates tzdata wget`，建 uid 10001 的 `mcpx` 用户，二进制放 `/app/mcpx`，
+  配置默认 `/etc/mcpx/mcpx.yaml`，`EXPOSE 8848`，`HEALTHCHECK` 打 `/healthz`。
+  构建参数沿用 agenthub 的约定：`BUILD_PROXY`、`GOPROXY`（默认 goproxy.cn）、
+  `ALPINE_MIRROR`，`go mod download` 带无代理回退与可执行的失败提示。
+- `deploy/mcpx.docker.yaml`：容器配置，监听 `0.0.0.0:8848`（容器内 `127.0.0.1` 不可达），
+  bearer 鉴权取 `MCPX_TOKEN`，上游指向 compose 的 `demo` 服务。
+- `docker-compose.yml`：`mcpx`（构建、只读根文件系统、`cap_drop: ALL`、
+  `no-new-privileges`、`tmpfs /tmp`、端口默认只绑 `127.0.0.1`、配置只读挂载）+
+  `demo`（`hashicorp/http-echo`，让新栈立刻有一个可调用工具）。
+  缺 `MCPX_TOKEN` 时进程打印 `authentication misconfigured` 后退出，而 `down/ps/logs`
+  不依赖该变量。
+- `.dockerignore`：排除 `.git`、产物、文档与测试，只保留 `go.mod/go.sum`、`cmd`、
+  `internal`、`deploy`。
+- `.env.example`：`MCPX_TOKEN`、`MCPX_BIND`、`MCPX_PORT`、`MCPX_CONFIG_FILE`、
+  `DEMO_TOKEN`。
+- `Makefile`：新增 `docker-build`（`--network=host` + 版本戳）、`compose-config`、
+  `compose-up`、`compose-down`。
+- 验证（本机 Docker 29.9 / Compose v5.6）：`docker build --check .` 无告警；
+  `docker build` 成功；`docker compose up -d --build` 后 `/healthz` 返回
+  `tools:1`，`tools/call demo_hello` 返回 `hello from the mcpx demo upstream`；
+  `docker compose down` 正常清理。
+
 ## 测试期发现并修复的问题
 
 1. **header 参数名不允许连字符**：`X-Trace` 这类标准写法被参数名校验拒绝。
@@ -119,11 +145,11 @@
 - 上游 `timeout` 与 `max_response_bytes` 在 `ApplyDefaults` 阶段继承 `defaults`，
   因此运行时不再判空；`Validate` 中对应的零值检查属于防御性分支。
 - `http.MethodHead` 在数据面被允许，但 `GET/HEAD {path}` 在 MCP 端点上固定 405。
-- 未实现容器化：`Dockerfile`、`docker-compose.yml` 仍为空占位。
+- compose 未使用 `${MCPX_TOKEN:?}`：那会让 `down/ps/logs` 也因缺变量失败；代价是缺
+  token 时容器进入重启循环（日志有明确原因），用 `docker compose logs mcpx` 即可定位。
 
 ## 后续待办
 
-- [ ] 容器化：多阶段构建（`CGO_ENABLED=0`）+ 非 root 用户 + 只读根文件系统示例。
 - [ ] 可选指标端点（`/metrics`）与请求耗时直方图；继续保持零第三方依赖需自实现。
 - [ ] 上游重试策略（仅幂等方法、有上限、可关闭）与熔断。
 - [ ] 配置 schema 的 `$ref`/默认值文档生成（当前 README 手写）。

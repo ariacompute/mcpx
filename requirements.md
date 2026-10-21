@@ -19,6 +19,8 @@
 - **安全与运维**：MCP 端点可选 Bearer 鉴权、默认只听 `127.0.0.1`、Origin 策略、路径
   穿越与跨源重定向防护、请求/响应/请求体三档限长、逐上游超时、结构化日志、优雅退出、
   `check` 子命令做启动前体检。
+- **容器化部署**：多阶段构建（静态二进制 + 非 root 运行时），compose 一键拉起网关与
+  演示上游；配置只读挂载，端口默认只发布到宿主机回环。
 
 ### 1.2 范围外
 
@@ -28,7 +30,7 @@
 - 服务端发起的 SSE 流（`GET /mcp` 固定 405）、采样、roots、resources/prompts 能力。
 - 动态发现上游、工具集运行时变更（`tools/list` 在启动后稳定）。
 - 持久化（无数据库；会话仅在内存，重启失效）。
-- 容器化（`Dockerfile` / `docker-compose.yml` 目前是空占位）。
+- 多容器编排（Kubernetes、Swarm、横向扩展与服务发现）。
 
 ## 2. 配置契约
 
@@ -217,6 +219,10 @@ POST/PUT/PATCH/DELETE；`body_param` 必须指向 `in=body` 的参数。
 - **可运维**：`/healthz` 返回版本、工具数、会话数、uptime；日志 JSON 到 stderr；
   SIGINT/SIGTERM → `Shutdown`（`shutdown_grace`）。
 - **无状态**：不落盘、不缓存；进程重启后客户端需重新 `initialize`。
+- **容器**：镜像多阶段构建（`golang:1.27-alpine` → `alpine:3.21`），以 uid 10001 非
+  root 运行；compose 使用只读根文件系统、`cap_drop: ALL`、`no-new-privileges`，端口
+  默认只绑宿主机 `127.0.0.1`，配置从 `deploy/mcpx.docker.yaml` 只读挂载到
+  `/etc/mcpx/mcpx.yaml`。
 
 ## 7. 验收标准
 
@@ -229,7 +235,10 @@ POST/PUT/PATCH/DELETE；`body_param` 必须指向 `in=body` 的参数。
 - [x] 安全用例：路径穿越、前缀越界（含 `/api/v1x` 与编码穿越）、跨源重定向、保留头
       注入、凭据缺失、响应截断、请求超限，均有断言。
 - [x] 错误语义：`-32700/-32600/-32601/-32602/-32603`、401/403/400/404/405/413/415/202。
-- [x] 文档同步：`README.md`、`requirements.md`、`task.md`、`AGENTS.md` 与实现一致。
+- [x] 容器：`docker build` 成功；`docker compose up -d --build` 后 `/healthz` 健康、
+      `tools/call demo_hello` 返回演示上游正文；`docker compose down` 无需 token 也能清理。
+- [x] 文档同步：`README.md`、`README_cn.md`、`requirements.md`、`task.md`、`AGENTS.md`
+      与实现一致。
 
 ## 8. 变更记录
 
@@ -237,3 +246,4 @@ POST/PUT/PATCH/DELETE；`body_param` 必须指向 `in=body` 的参数。
 | --- | --- |
 | v1 | 首个实现：配置/协议/双传输/两种工具粒度/安全模型/端到端测试 |
 | v1.1 | header 参数允许连字符并做大小写不敏感去重；根前缀 `/` 覆盖全部路径；覆盖率 75% → 91.8%；新增 `make cover` / `cover-html`；文档三件套补齐 |
+| v1.2 | 容器化：多阶段 Dockerfile（非 root、健康检查、版本戳）、compose（网关 + 演示上游、只读根文件系统、回环发布）、`deploy/mcpx.docker.yaml`、`.env.example`、`make docker-build/compose-*` |

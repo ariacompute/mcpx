@@ -1,6 +1,6 @@
 # mcpx
 
-English | [中文](README_cn.md)
+[English](README.md) | [中文](README_cn.md)
 
 An MCP gateway: one declarative config publishes **arbitrary HTTP services** as MCP tools,
 and exposes them through an MCP server (Streamable HTTP and stdio). The name follows
@@ -9,8 +9,8 @@ nginx's short-lowercase style — nginx is "engine-x", this is "MCP-x".
 ```
 MCP client ──HTTP POST /mcp──┐
            ──stdio NDJSON────┤ mcpx ──HTTP──> your HTTP service (any language/framework)
-                            │  ├─ one named tool per operation
-                            │  └─ one restricted passthrough tool per upstream
+                             │  ├─ one named tool per operation
+                             │  └─ one restricted passthrough tool per upstream
 ```
 
 The relationship to nginx is a **shape reference, not a dependency**: an upstream names the
@@ -21,18 +21,36 @@ terminate TLS, cache, or hot-reload; that is a fronting nginx and a restart.
 ## Quick start
 
 ```bash
-make build                 # produces bin/mcpx with a git build stamp
+make build                           # produces bin/mcpx with a git build stamp
 cp mcpx.yaml mcpx.local.yaml
-export MCPX_TOKEN=...      # bearer token for the MCP endpoint
-export PETSTORE_TOKEN=...  # upstream credential (config stores the variable name only)
-./bin/mcpx check -c mcpx.local.yaml    # validate the config and list the tools
-./bin/mcpx serve -c mcpx.local.yaml    # default command, listens on 127.0.0.1:8848
-./bin/mcpx stdio -c mcpx.local.yaml    # for local clients that launch a process
+export MCPX_TOKEN=...                # bearer token for the MCP endpoint
+export PETSTORE_TOKEN=...            # upstream credential (config stores the variable name only)
+./bin/mcpx check -c mcpx.local.yaml  # validate the config and list the tools
+./bin/mcpx serve -c mcpx.local.yaml  # default command, listens on 127.0.0.1:8848
+./bin/mcpx stdio -c mcpx.local.yaml  # for local clients that launch a process
 ```
 
 A passing `check` means every URL is valid, every path template compiles, tool names do not
 collide, the passthrough allowlist is non-empty, and every credential variable name is
 well-formed. Any failure is reported with its location and the process refuses to start.
+
+### Docker Compose
+
+```bash
+cp .env.example .env        # set MCPX_TOKEN, e.g. openssl rand -hex 24
+docker compose up -d --build
+curl -s http://127.0.0.1:8848/healthz
+```
+
+The image is a two-stage build (static binary on Alpine, non-root uid 10001) and the
+container mounts `deploy/mcpx.docker.yaml` read-only. That config listens on
+`0.0.0.0:8848` — `127.0.0.1` inside a container is not reachable from the host — and
+points at the `demo` service, so a fresh stack ships one callable tool. Swap in your own
+file with `MCPX_CONFIG_FILE`, keeping the `0.0.0.0` listen address.
+
+The published port is bound to `127.0.0.1` on the host by default; put a reverse proxy in
+front before changing `MCPX_BIND`. Without `MCPX_TOKEN` the process logs
+`authentication misconfigured` and exits, while `docker compose down` keeps working.
 
 ## Configuration
 
@@ -44,10 +62,10 @@ interpreted as "unrestricted".
 server:
   listen: 127.0.0.1:8848
   path: /mcp
-  auth: {scheme: bearer, token_env: MCPX_TOKEN}   # none | bearer
+  auth: {scheme: bearer, token_env: MCPX_TOKEN}    # none | bearer
   protocol_versions: ["2025-06-18", "2025-03-26"]
-  allowed_origins: ["https://app.example.com"]    # empty = loopback origins only
-  instructions: "..."                             # optional, returned by initialize
+  allowed_origins: ["https://app.example.com"]     # empty = loopback origins only
+  instructions: "..."                              # optional, returned by initialize
   max_request_bytes: 1048576
   session_ttl: 30m
   shutdown_grace: 15s
@@ -59,7 +77,7 @@ defaults:
 
 upstreams:
   - name: petstore
-    base_url: https://petstore.example.com      # may include a path prefix, e.g. /api
+    base_url: https://petstore.example.com  # may include a path prefix, e.g. /api
     headers: {X-Env: prod}
     auth: {scheme: bearer, token_env: PETSTORE_TOKEN}
     timeout: 10s
@@ -193,14 +211,14 @@ stdout belongs to the protocol and every log line goes to stderr; EOF is a clean
 ## Development
 
 ```bash
-make build      # bin/mcpx (version/commit/date injected via -ldflags)
-make test       # go test -race ./...
-make vet        # go vet ./...
-make cover      # whole-repo coverage summary (coverage.out, gitignored)
-make cover-html # generate and open the HTML coverage report
-make check      # validate the example config and list its tools
-make run        # run the HTTP endpoint in the foreground
-make stdio      # run the stdio transport in the foreground
+make build       # bin/mcpx (version/commit/date injected via -ldflags)
+make test        # go test -race ./...
+make vet         # go vet ./...
+make cover       # whole-repo coverage summary (coverage.out, gitignored)
+make cover-html  # generate and open the HTML coverage report
+make check       # validate the example config and list its tools
+make run         # run the HTTP endpoint in the foreground
+make stdio       # run the stdio transport in the foreground
 ```
 
 Tests are fully offline (`httptest` + `io.Pipe`) and `go test -race ./...` is green;
@@ -233,3 +251,16 @@ everything else is the standard library.
 - Built-in TLS (use a fronting nginx)
 - Dynamic upstream discovery (the tool set is fixed at startup, which keeps `tools/list`
   stable and cacheable)
+
+## License
+
+MIT.
+
+## Engineering conventions
+
+This repository follows Harness Engineering:
+
+- [`AGENTS.md`](AGENTS.md): entry point and directory index for agent engineering context
+- [`requirements.md`](requirements.md): requirement spec (scope / errors / acceptance, reviewed by
+  a human before coding)
+- [`task.md`](task.md): implementation checklist
