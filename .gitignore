@@ -1,0 +1,6 @@
+bin/
+coverage.out
+*.local.yaml
+*.local.json
+.env
+.DS_Store
