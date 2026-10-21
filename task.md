@@ -127,15 +127,30 @@
   `docker build` 成功；`docker compose up -d --build` 后 `/healthz` 返回
   `tools:1`，`tools/call demo_hello` 返回 `hello from the mcpx demo upstream`；
   `docker compose down` 正常清理。
-- `.github/workflows/release.yml`：`v*` tag（或 `workflow_dispatch` 指定版本）触发三阶段
-  —— `verify`（`gofmt -l` / `go vet` / `go test -race`）、`meta`（去 `v` 前缀的版本 +
-  短 commit + UTC 时间 + 小写 GHCR 路径）、`smoke`（本地 `docker build` 后用真实容器跑
-  `/healthz` → `initialize` → 带会话 `tools/list` 断言 `demo_hello`），最后 `image` 用
-  buildx 推 `linux/amd64,linux/arm64` 到 `ghcr.io/<owner>/mcpx`，tag 由版本派生
-  （`1.2.3` → `:1.2.3 :1.2 :1 :latest`），带 OCI labels、provenance 与 SBOM。
-  版本戳经 `--build-arg` 传入（`.dockerignore` 排除 `.git`），并断言 `mcpx version` 输出。
-- 该工作流的边界：本地没有 GitHub runner，**只做了 YAML 解析校验**（`yaml.safe_load`），
-  未在真实 Actions 环境跑过；首次推 tag 时需人工确认镜像可见性（GHCR 包默认私有）。
+- `.github/workflows/release.yml`：形态照 `agenthub` 的发布工作流，触发条件是
+  **release published**（不是 tag push），四个 job：
+  `verify`（`gofmt -l` / `go vet` / `go test -race`，作为另两个的闸门）→ 并行
+  `image` 与 `binaries`：
+  - `image`：buildx 先 `--platform linux/amd64 --load` 出 `mcpx:smoke`，断言
+    `mcpx version` 带版本戳，起容器跑 `/healthz` → `initialize` → 带会话 `tools/list`
+    断言 `demo_hello`，通过后再 `linux/amd64,linux/arm64` 推送 DockerHub
+    `ariacompute/mcpx:<version>` 与 `:latest`（第二次构建复用同一 builder 的缓存）；
+    OCI labels 含 source/version/revision/created/licenses；关掉 provenance 与 SBOM
+    （本项目的可校验物是 `SHA256SUMS.txt`，多一份不可验证的证明没有意义）。
+  - `binaries`：矩阵五格（linux/darwin × amd64/arm64、windows/amd64）在 ubuntu runner 上
+    交叉编译（`CGO_ENABLED=0`，与 Dockerfile/Makefile 同一套 `-ldflags`），linux/amd64 那格
+    额外跑一次二进制冒烟；每格打包 `mcpx-<version>-<os>-<arch>.tar.gz`（windows 为 `.zip`），
+    内含 `mcpx` 与 `LICENSE`，用 `softprops/action-gh-release` 挂到触发它的那个 release。
+  - `checksums`：`binaries` 之后下载全部压缩包，写**单个** `SHA256SUMS.txt` 再上传。
+    不复用「每格各传一份同名 SHA256SUMS.txt」的写法：那样 release 上只会剩最后完成那格的。
+- 版本口径：release tag 是 `v1.2.3`，镜像 tag / 包名 / 二进制内 `VERSION` 统一取 `1.2.3`
+  （与 agenthub「镜像 tag 直接等于 tag」的取舍不同，这里换成裸版本，让 `docker pull`、
+  包名与 `mcpx version` 三处字符串一致）。
+- 该工作流的边界：本地无 GitHub runner，**只做了 YAML 解析校验与逐段本地复现**——
+  五平台交叉编译、linux/amd64 二进制冒烟（`mcpx 1.2.0 (cf81c11)` + `tools:1` +
+  `demo_hello`）、打包含 `LICENSE`、`sha256sum -c` 自检、buildx `--load` + 容器冒烟；
+  多架构推送与 release 资产上传未在真实 Actions 跑过（本地无 QEMU binfmt，也没有
+  DockerHub 凭据），首次发布时需人工确认镜像可见性与资产齐全。
 
 ## 测试期发现并修复的问题
 

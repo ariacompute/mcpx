@@ -1,47 +1,76 @@
-# Tag-driven release: verify the module, smoke-test the image, then publish a
-# multi-arch image to GHCR.
-#
-#   git tag v1.2.0 && git push origin v1.2.0
-#
-# Publishes (:1.2.0, :1.2, :1, :latest) for linux/amd64 and linux/arm64. A manual
-# `workflow_dispatch` run does the same for an explicit version, which is the way
-# to backfill a tag whose push event was missed.
-#
-# The build stamp is passed in as build args rather than read from .git: the
-# Docker context excludes .git (see .dockerignore), so `mcpx version` inside the
-# image would otherwise always report "dev".
-name: release
+name: Release
 
+# Publish an mcpx release. Three jobs:
+#
+#   verify     gofmt / go vet / go test -race, gate for the two below
+#   image      container image on DockerHub (buildx: linux/amd64 + linux/arm64)
+#   binaries   linux / macOS / Windows archives attached to the GitHub release
+#
+# Trigger is a *published* GitHub release, not a tag push: the assets land on a
+# release somebody wrote notes for, and `gh release create` / the web UI both
+# work the same. The release's tag is the single source of the version.
+#
+# Image:
+#
+#   ariacompute/mcpx:<version>   pinned to that release
+#   ariacompute/mcpx:latest      whatever was released last
+#
+# The tag carries a "v" prefix (`v1.2.0`) but the image tag and the archives use
+# the bare version (`1.2.0`), which is also the value stamped into the binary.
+# So `docker pull ariacompute/mcpx:1.2.0`, `mcpx version` and `tar xzf
+# mcpx-1.2.0-linux-amd64.tar.gz` all agree, and `:latest` can be traced back to
+# the release it came from. Nothing here falls back to the Dockerfile defaults:
+# publishing without a tag would push an untraceable image stamped "dev".
+#
+# The stamp travels as build args / -ldflags because .dockerignore excludes .git
+# and the archives are built from a checkout where `git describe` is only as good
+# as fetch-depth. COMMIT is the seven character revision of the released tag, the
+# same three args `make docker-build` passes locally.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   - DOCKERHUB_USERNAME: DockerHub account / org name
+#   - DOCKERHUB_TOKEN:    DockerHub access token with write permission
+#
+# No proxy is needed on a runner: the Dockerfile already retries `go mod
+# download` with the proxy variables cleared, which is what works with direct
+# internet. GOPROXY is pinned to the upstream mirror for the same reason — the
+# image's goproxy.cn default exists for developer machines behind the GFW.
 on:
-  push:
-    tags: ["v*"]
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Version to publish, without the leading v (e.g. 1.2.0)"
-        required: true
-        type: string
+  release:
+    types: [published]
 
-permissions:
-  contents: read
-  packages: write
-
-# One release at a time; never cancel a half-pushed image.
+# One publish at a time: a newer release cancels an in-progress one, so :latest
+# can never be overwritten by an older release that happens to finish later, and
+# a release's assets are never a mix of two runs.
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  group: release
+  cancel-in-progress: true
 
 env:
   GO_VERSION: "1.27"
+  IMAGE: ariacompute/mcpx
+  # Upstream module mirror; the Dockerfile default (goproxy.cn) is for
+  # developer machines, not for a runner with direct internet.
+  GOPROXY: https://proxy.golang.org,direct
 
 jobs:
-  # Fail fast on tests and vet before anything reaches a registry.
+  # Fail fast on formatting, vet and tests before anything reaches a registry or
+  # a release page. The two publishing jobs below depend on this one.
   verify:
+    name: Verify
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout the release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          # `git rev-list --count` in the meta step needs the tag's history.
+          fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - name: Install Go
+        uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -50,94 +79,110 @@ jobs:
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
-            echo "gofmt needed on:"
-            echo "$unformatted"
+            echo "::error::gofmt needed on:" >&2
+            echo "$unformatted" >&2
             exit 1
           fi
 
       - run: go vet ./...
+
       - run: go test -race ./...
 
-  # Derived once so the smoke test and the publish step cannot disagree.
-  meta:
+  # ------------------------------------------------------------------ image --
+  image:
+    name: Build & publish the mcpx image
+    needs: [verify]
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      commit: ${{ steps.version.outputs.commit }}
-      date: ${{ steps.version.outputs.date }}
-      image: ${{ steps.version.outputs.image }}
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout the release tag
+        uses: actions/checkout@v4
         with:
+          # The default release checkout does not have to sit on the tag; pinning
+          # the ref is what makes COMMIT the revision actually released.
+          ref: ${{ github.event.release.tag_name }}
           fetch-depth: 0
 
-      - id: version
-        name: Resolve build stamp
+      - name: Resolve build stamp
+        id: meta
         run: |
           set -euo pipefail
-
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            raw="${{ inputs.version }}"
-          else
-            raw="${GITHUB_REF_NAME}"
+          TAG="${{ github.event.release.tag_name }}"
+          if [ -z "$TAG" ]; then
+            echo "::error::Release carries no tag; refusing to publish an image that cannot be traced back to a release." >&2
+            exit 1
           fi
-
-          version="${raw#v}"
-          if [ -z "$version" ]; then
-            echo "empty version (tag: ${raw:-<none>})" >&2
+          if [ ! -f ./Dockerfile ]; then
+            echo "::error::./Dockerfile is missing at the repository root." >&2
             exit 1
           fi
 
-          # GHCR requires a lowercase path; owners may contain capitals.
-          owner=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
-          image="ghcr.io/${owner}/mcpx"
+          VERSION="${TAG#v}"
+          COMMIT="$(git rev-parse --short=7 HEAD)"
 
           {
-            echo "version=$version"
-            echo "commit=$(git rev-parse --short=7 HEAD)"
-            echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "image=$image"
+            echo "tag=${TAG}"
+            echo "version=${VERSION}"
+            echo "commit=${COMMIT}"
+            echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_OUTPUT"
+          echo "Publishing ${VERSION} (commit ${COMMIT}) from tag ${TAG}"
 
-  # Builds amd64 locally and drives a real MCP handshake, so a release cannot
-  # ship an image that starts but cannot answer initialize/tools/list.
-  smoke:
-    needs: [meta, verify]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
-      - name: Build image
-        run: |
-          docker build \
-            --build-arg VERSION=${{ needs.meta.outputs.version }} \
-            --build-arg COMMIT=${{ needs.meta.outputs.commit }} \
-            --build-arg DATE=${{ needs.meta.outputs.date }} \
-            --build-arg GOPROXY=https://proxy.golang.org,direct \
-            -t mcpx:ci .
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Assert the build stamp is baked in
-        run: |
-          docker run --rm mcpx:ci version | tee stamp.txt
-          grep -q "mcpx ${{ needs.meta.outputs.version }} (${{ needs.meta.outputs.commit }})" stamp.txt
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: MCP handshake against the container
+      # Names must match the ARGs in the Dockerfile exactly, otherwise the binary
+      # silently keeps the dev / unknown sentinels.
+      - name: Build the amd64 image locally for the smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          # Loaded, not pushed: nothing is published until the handshake below
+          # succeeds. The second build reuses this build cache.
+          load: true
+          tags: mcpx:smoke
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT=${{ steps.meta.outputs.commit }}
+            DATE=${{ steps.meta.outputs.created }}
+            GOPROXY=${{ env.GOPROXY }}
+
+      # A release must not ship an image that starts but cannot speak MCP. The
+      # shipped config points the demo upstream at the compose host `demo`, which
+      # does not resolve here — initialize and tools/list never reach it, so this
+      # is exactly the traffic worth checking.
+      - name: Smoke the image
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          COMMIT: ${{ steps.meta.outputs.commit }}
         run: |
           set -euo pipefail
           token=ci-smoke-token
 
-          docker run -d --name mcpx-ci \
-            -e MCPX_TOKEN="$token" \
-            -p 8848:8848 \
-            mcpx:ci
+          docker run --rm mcpx:smoke version | tee stamp.txt
+          grep -q "mcpx ${VERSION} (${COMMIT})" stamp.txt
 
-          cleanup() { docker logs mcpx-ci || true; docker rm -f mcpx-ci || true; }
+          docker run -d --name mcpx-smoke -e MCPX_TOKEN="$token" -p 8848:8848 mcpx:smoke
+          cleanup() {
+            docker logs mcpx-smoke || true
+            docker rm -f mcpx-smoke >/dev/null 2>&1 || true
+          }
           trap cleanup EXIT
 
           for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8848/healthz >/dev/null 2>&1; then
-              break
-            fi
+            curl -fsS http://127.0.0.1:8848/healthz >/dev/null 2>&1 && break
             sleep 1
           done
           curl -fsS http://127.0.0.1:8848/healthz
@@ -150,7 +195,6 @@ jobs:
 
           sid=$(echo "$headers" | tr -d '\r' | awk '/^Mcp-Session-Id:/{print $2}')
           test -n "$sid"
-
           echo "$headers" | grep -q '"protocolVersion"'
 
           tools=$(curl -fsS -X POST http://127.0.0.1:8848/mcp \
@@ -158,68 +202,249 @@ jobs:
             -H 'Content-Type: application/json' \
             -H "Mcp-Session-Id: $sid" \
             -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')
-          echo "$tools"
+          echo "$tools" | head -c 400
           echo "$tools" | grep -q '"demo_hello"'
 
-      - name: Dump container logs on failure
-        if: failure()
-        run: docker logs mcpx-ci || true
-
-  # Multi-arch publish. No `--load`: buildx keeps the result in the cache and
-  # pushes both platforms at once.
-  image:
-    needs: [meta, verify, smoke]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Derive :1.2.3, :1.2, :1 and :latest from the released version. Tags stay
-      # immutable: only a newer tag moves :1.2 / :1 / :latest.
-      - id: tags
-        name: Derive image tags
-        run: |
-          set -euo pipefail
-          image="${{ needs.meta.outputs.image }}"
-          version="${{ needs.meta.outputs.version }}"
-
-          tags="${image}:${version}"
-          if [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
-            tags="${tags},${image}:${BASH_REMATCH[1]}.${BASH_REMATCH[2]},${image}:${BASH_REMATCH[1]},${image}:latest"
-          fi
-
-          echo "tags=$tags"
-          echo "tags=$tags" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push
+      - name: Build and push the multi-arch image
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.tags.outputs.tags }}
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
+            ${{ env.IMAGE }}:latest
           build-args: |
-            VERSION=${{ needs.meta.outputs.version }}
-            COMMIT=${{ needs.meta.outputs.commit }}
-            DATE=${{ needs.meta.outputs.date }}
-            GOPROXY=https://proxy.golang.org,direct
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT=${{ steps.meta.outputs.commit }}
+            DATE=${{ steps.meta.outputs.created }}
+            GOPROXY=${{ env.GOPROXY }}
           labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.title=mcpx
             org.opencontainers.image.description=MCP gateway for arbitrary HTTP services
-            org.opencontainers.image.version=${{ needs.meta.outputs.version }}
-            org.opencontainers.image.revision=${{ needs.meta.outputs.commit }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.meta.outputs.commit }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
             org.opencontainers.image.licenses=MIT
-          provenance: true
-          sbom: true
+          # The binaries are already reproducible enough for this project; an
+          # attestation would only add a second, unverifiable artefact next to
+          # the checksums the release ships.
+          provenance: false
+          sbom: false
 
       - name: Summary
-        run: echo "published ${{ steps.tags.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          {
+            echo "### mcpx image"
+            echo ""
+            echo '```'
+            echo "docker pull ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # --------------------------------------------------------------- binaries --
+  #
+  # Pure Go, CGO_ENABLED=0: every platform cross-compiles on one runner, so the
+  # matrix is four stamps over the same checkout rather than four machines.
+  # Asset names follow the goreleaser convention:
+  #
+  #   mcpx-<version>-linux-amd64.tar.gz     (also linux-arm64)
+  #   mcpx-<version>-darwin-amd64.tar.gz    (also darwin-arm64)
+  #   mcpx-<version>-windows-amd64.zip
+  #
+  # Each cell uploads its own archive; the `checksums` job then downloads them
+  # all and attaches one SHA256SUMS.txt. A per-cell file with that name would be
+  # overwritten by whichever cell finished last.
+  binaries:
+    name: Binaries ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: [verify]
+    runs-on: ubuntu-latest
+    permissions:
+      # Attaching assets to the published release needs write. The image job
+      # above deliberately keeps contents: read.
+      contents: write
+    strategy:
+      # One platform failing must not hide the others from the release.
+      fail-fast: false
+      matrix:
+        include:
+          # The only cell whose binary can run here; it doubles as the smoke test
+          # for the stamp and the MCP handshake of the shipped artefact.
+          - goos: linux
+            goarch: amd64
+            smoke: true
+          - goos: linux
+            goarch: arm64
+            smoke: false
+          - goos: darwin
+            goarch: amd64
+            smoke: false
+          - goos: darwin
+            goarch: arm64
+            smoke: false
+          - goos: windows
+            goarch: amd64
+            smoke: false
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Resolve the release stamp
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.release.tag_name }}"
+          if [ -z "$TAG" ]; then
+            echo "::error::Release carries no tag; refusing to publish archives that cannot be traced back to a release." >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          {
+            echo "version=${VERSION}"
+            echo "commit=$(git rev-parse --short=7 HEAD)"
+            echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          COMMIT: ${{ steps.meta.outputs.commit }}
+          DATE: ${{ steps.meta.outputs.created }}
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          SUFFIX=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            SUFFIX=".exe"
+          fi
+          # Same flags as the Dockerfile and the Makefile, spelled out here
+          # because -ldflags is the only place the stamp is injected.
+          LDFLAGS="-s -w \
+            -X mcpx/internal/version.Version=${VERSION} \
+            -X mcpx/internal/version.Commit=${COMMIT} \
+            -X mcpx/internal/version.Date=${DATE}"
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath -ldflags "$LDFLAGS" -o "build/mcpx${SUFFIX}" ./cmd/mcpx
+          ls -l build
+
+      - name: Smoke the released binary
+        if: matrix.smoke
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          COMMIT: ${{ steps.meta.outputs.commit }}
+        run: |
+          set -euo pipefail
+          ./build/mcpx version | tee stamp.txt
+          grep -q "mcpx ${VERSION} (${COMMIT})" stamp.txt
+
+          # The config the image ships; the demo upstream host only resolves
+          # inside compose, and a handshake never reaches it.
+          MCPX_TOKEN=ci-smoke-token ./build/mcpx serve -c deploy/mcpx.docker.yaml &
+          pid=$!
+          cleanup() {
+            kill "$pid" >/dev/null 2>&1 || true
+            wait "$pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8848/healthz >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8848/healthz
+
+          headers=$(curl -si -X POST http://127.0.0.1:8848/mcp \
+            -H "Authorization: Bearer ci-smoke-token" \
+            -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}')
+          sid=$(echo "$headers" | tr -d '\r' | awk '/^Mcp-Session-Id:/{print $2}')
+          test -n "$sid"
+          echo "$headers" | grep -q '"protocolVersion"'
+
+          tools=$(curl -fsS -X POST http://127.0.0.1:8848/mcp \
+            -H "Authorization: Bearer ci-smoke-token" \
+            -H 'Content-Type: application/json' \
+            -H "Mcp-Session-Id: $sid" \
+            -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')
+          echo "$tools" | grep -q '"demo_hello"'
+
+      - name: Package the archive
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          NAME="mcpx-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          mkdir -p dist
+          # The licence travels with the binary: an archive is what most people
+          # actually download, and MIT asks for the notice to come along.
+          cp LICENSE build/
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip -j -q "dist/${NAME}.zip" build/mcpx.exe build/LICENSE
+          else
+            tar -czf "dist/${NAME}.tar.gz" -C build mcpx LICENSE
+          fi
+          ls -l dist
+
+      - name: Attach the archive to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          # The release that triggered this run; no new release, no body edit.
+          tag_name: ${{ github.event.release.tag_name }}
+          files: |
+            dist/*
+          fail_on_unmatched_files: true
+
+  # One checksum file for the whole release, written after every archive exists.
+  # It used to be one SHA256SUMS.txt per matrix cell, which meant the release
+  # kept only whichever cell finished last.
+  checksums:
+    name: Checksums
+    needs: [binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the release archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "${{ github.event.release.tag_name }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dir dist \
+            --pattern '*.tar.gz' \
+            --pattern '*.zip'
+          ls -1 dist
+
+      - name: Write SHA256SUMS.txt
+        run: |
+          set -euo pipefail
+          cd dist
+          # `<hash>  <file>` — the format `sha256sum -c` and `shasum -a 256 -c`
+          # both read, which is what a downloaded archive deserves.
+          sha256sum *.tar.gz *.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Attach the checksums to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: |
+            dist/SHA256SUMS.txt
+          fail_on_unmatched_files: true

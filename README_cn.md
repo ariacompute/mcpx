@@ -49,14 +49,29 @@ curl -s http://127.0.0.1:8848/healthz
 `MCPX_TOKEN` 时进程打印 `authentication misconfigured` 后退出，但 `docker compose down`
 仍可正常清理。
 
-推 `v*` tag 会触发 `.github/workflows/release.yml`：先跑 `gofmt`/`go vet`/`go test -race`，
-再对镜像做一次真实 HTTP 冒烟（`initialize` 后 `tools/list`），最后多架构推送 GHCR。
-`v1.2.3` 产出 `:1.2.3`、`:1.2`、`:1`、`:latest`（linux/amd64 + linux/arm64），构建戳已写入镜像，`/healthz` 与 `mcpx version` 都能读回。不用 compose 时：
+**已发布镜像。** 在 GitHub 上发布 release 会触发 `.github/workflows/release.yml`，
+把 `ariacompute/mcpx` 推送到 DockerHub：该 release 的 `:<version>` 加最新的 `:latest`，
+同时覆盖 linux/amd64 与 linux/arm64。release 的版本与 commit 以构建参数注入镜像，所以
+镜像 tag 与 `/healthz` 报告的 `version@commit` 永远一致。工作流需要两个仓库 secret：
+`DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`。
 
 ```bash
+docker pull ariacompute/mcpx:<version>   # 例如 1.2.3（release tag 去掉 v）
 docker run --rm -e MCPX_TOKEN=$(openssl rand -hex 24) \
-  -p 127.0.0.1:8848:8848 ghcr.io/<owner>/mcpx:1.2.3
+  -p 127.0.0.1:8848:8848 ariacompute/mcpx:1.2.3
 ```
+
+**二进制包。** 同一个 release 还附带 linux/amd64、linux/arm64、darwin/amd64、
+darwin/arm64、windows/amd64 的独立压缩包，以及覆盖全部的单个 `SHA256SUMS.txt`：
+
+```bash
+tar xzf mcpx-1.2.3-linux-amd64.tar.gz      # mcpx + LICENSE
+./mcpx version                             # mcpx 1.2.3 (<commit>) ...
+```
+
+macOS 包**未做代码签名与公证**（未配置证书），下载后会被 Gatekeeper 隔离，可
+`xattr -d com.apple.quarantine mcpx` 或直接源码构建。解包前先用
+`sha256sum -c SHA256SUMS.txt`（macOS 上 `shasum -a 256 -c`）校验。
 
 ## 配置
 

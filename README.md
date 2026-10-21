@@ -52,16 +52,32 @@ The published port is bound to `127.0.0.1` on the host by default; put a reverse
 front before changing `MCPX_BIND`. Without `MCPX_TOKEN` the process logs
 `authentication misconfigured` and exits, while `docker compose down` keeps working.
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`: `gofmt`/`go vet`/`go test -race`,
-a container smoke test (`initialize` then `tools/list` over real HTTP), then a multi-arch
-push to GHCR. `v1.2.3` publishes `:1.2.3`, `:1.2`, `:1` and `:latest` for linux/amd64 and
-linux/arm64, with the build stamp baked in so `/healthz` and `mcpx version` report it.
-Without compose:
+**Published images.** Publishing a GitHub release runs `.github/workflows/release.yml`,
+which builds and pushes `ariacompute/mcpx` to DockerHub: `:<version>` for that release and
+`:latest` for the newest one, for linux/amd64 and linux/arm64. The release's commit and
+version go into the image as build args, so the image tag and the `version@commit` reported
+by `/healthz` always agree. The workflow needs two repository secrets:
+`DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
 
 ```bash
+docker pull ariacompute/mcpx:<version>   # e.g. 1.2.3 (the release tag minus its v)
 docker run --rm -e MCPX_TOKEN=$(openssl rand -hex 24) \
-  -p 127.0.0.1:8848:8848 ghcr.io/<owner>/mcpx:1.2.3
+  -p 127.0.0.1:8848:8848 ariacompute/mcpx:1.2.3
 ```
+
+**Binaries.** The same release attaches standalone archives for
+linux/amd64, linux/arm64, darwin/amd64, darwin/arm64 and windows/amd64, plus one
+`SHA256SUMS.txt` covering all of them:
+
+```bash
+tar xzf mcpx-1.2.3-linux-amd64.tar.gz      # mcpx + LICENSE
+./mcpx version                             # mcpx 1.2.3 (<commit>) ...
+```
+
+macOS builds are **not code-signed or notarized** (no certificate is configured), so a
+downloaded `mcpx` is quarantined by Gatekeeper; either `xattr -d com.apple.quarantine mcpx`
+or build from source. Before running an archive, check it with
+`sha256sum -c SHA256SUMS.txt` (`shasum -a 256 -c` on macOS).
 
 ## Configuration
 

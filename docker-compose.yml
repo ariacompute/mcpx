@@ -12,6 +12,12 @@
 # point MCPX_CONFIG_FILE at it (the file must listen on 0.0.0.0 inside the
 # container) and `docker compose restart mcpx`.
 #
+# Published images exist too (see README "Published images"), so a released
+# version can be run without a checkout:
+#
+#   MCPX_IMAGE=ariacompute/mcpx VERSION=1.2.3 docker compose pull
+#   MCPX_IMAGE=ariacompute/mcpx VERSION=1.2.3 docker compose up -d
+#
 # Call a tool (the session id from initialize must be sent on every request):
 #
 #   SID=$(curl -si -X POST http://127.0.0.1:8848/mcp \
