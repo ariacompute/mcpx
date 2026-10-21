@@ -13,9 +13,11 @@ coverage.out
 coverage.html
 *.local.yaml
 
-# Docs, tests and the compose file are not part of the image.
+# Docs, tests, examples and the compose file are not part of the image.
 *.md
 tests/
+example/
+scripts/
 Dockerfile
 docker-compose.yml
 .dockerignore

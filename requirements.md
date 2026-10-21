@@ -21,6 +21,9 @@
   `check` 子命令做启动前体检。
 - **容器化部署**：多阶段构建（静态二进制 + 非 root 运行时），compose 一键拉起网关与
   演示上游；配置只读挂载，端口默认只发布到宿主机回环。
+- **可运行示例**：`example/` 提供一个 Python 上游服务与两种传输的 MCP 客户端（标准库、
+  零依赖），`scripts/` 提供一键接入测试（`make example-test`），覆盖握手、会话头、
+  `tools/list`、`tools/call`、通知 202 与 DELETE/EOF。
 
 ### 1.2 范围外
 
@@ -31,6 +34,7 @@
 - 动态发现上游、工具集运行时变更（`tools/list` 在启动后稳定）。
 - 持久化（无数据库；会话仅在内存，重启失效）。
 - 多容器编排（Kubernetes、Swarm、横向扩展与服务发现）。
+- 示例不引入 MCP SDK 或其他 Python 依赖：示例的价值是让人看清线上协议，而不是隐藏它。
 
 ## 2. 配置契约
 
@@ -249,6 +253,10 @@ POST/PUT/PATCH/DELETE；`body_param` 必须指向 `in=body` 的参数。
 - [x] 发布工作流：YAML 可解析，`verify → image / binaries → checksums` 依赖关系完整；
       五平台交叉编译、linux/amd64 二进制冒烟、`buildx --load` 容器冒烟、打包与
       `sha256sum -c` 均在本地复现通过（真实 Actions 运行、多架构推送与资产上传待首次发布验证）。
+- [x] 示例：`mcpx check -c example/mcpx.example.yaml` 列出 5 个工具；
+      `make example-test-http` 与 `make example-test-stdio` 各自通过（握手、202、`tools/list`、
+      `tools/call` 增删查、未知工具 `-32602`、缺参 `isError`、DELETE/EOF），
+      端口可覆盖、过程无残留进程、客户端 stdout 无日志污染。
 - [x] 文档同步：`README.md`、`README_cn.md`、`requirements.md`、`task.md`、`AGENTS.md`
       与实现一致。
 
@@ -259,3 +267,4 @@ POST/PUT/PATCH/DELETE；`body_param` 必须指向 `in=body` 的参数。
 | v1 | 首个实现：配置/协议/双传输/两种工具粒度/安全模型/端到端测试 |
 | v1.1 | header 参数允许连字符并做大小写不敏感去重；根前缀 `/` 覆盖全部路径；覆盖率 75% → 91.8%；新增 `make cover` / `cover-html`；文档三件套补齐 |
 | v1.2 | 容器化：多阶段 Dockerfile（非 root、健康检查、版本戳）、compose（网关 + 演示上游、只读根文件系统、回环发布）、`deploy/mcpx.docker.yaml`、`.env.example`、`make docker-build/compose-*`、`.github/workflows/release.yml`（release 触发：校验 → DockerHub 双架构镜像 + linux/macOS/Windows 二进制与 `SHA256SUMS.txt`） |
+| v1.3 | 接入示例与测试：`example/`（Python 标准库 notes 服务 + Streamable HTTP 客户端 + stdio 客户端 + 共享 `mcpx.example.yaml`）、`scripts/`（`example-lib.sh` + 两条一键测试）、`make example-test-http/stdio/test`、`example/README{,_cn}.md` |

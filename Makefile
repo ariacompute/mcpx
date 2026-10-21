@@ -12,6 +12,7 @@ LDFLAGS := -X mcpx/internal/version.Version=$(VERSION) \
            -X mcpx/internal/version.Date=$(DATE)
 
 .PHONY: all build test vet fmt cover cover-html check run stdio tidy clean \
+        example-test example-test-http example-test-stdio \
         docker-build compose-config compose-up compose-down
 
 all: build
@@ -43,6 +44,25 @@ run: build
 
 stdio: build
 	./$(BIN) stdio -c $(CONFIG)
+
+# ---------------------------------------------------------------- examples --
+#
+# The examples in example/ are a Python notes service plus two clients, one per
+# transport. Each target starts everything it needs, runs the assertions and
+# cleans up; KEEP=1 leaves the processes running for inspection.
+EXAMPLE_UPSTREAM_PORT ?= 18081
+EXAMPLE_GATEWAY_PORT  ?= 18848
+
+example-test: example-test-http example-test-stdio
+
+example-test-http: build
+	EXAMPLE_UPSTREAM_PORT=$(EXAMPLE_UPSTREAM_PORT) \
+	EXAMPLE_GATEWAY_PORT=$(EXAMPLE_GATEWAY_PORT) \
+	KEEP=$(KEEP) ./scripts/test-example-http.sh
+
+example-test-stdio: build
+	EXAMPLE_UPSTREAM_PORT=$(EXAMPLE_UPSTREAM_PORT) \
+	KEEP=$(KEEP) ./scripts/test-example-stdio.sh
 
 # Image build with the git stamp forwarded. --network=host lets a host-side
 # BUILD_PROXY (usually 127.0.0.1:<port>) resolve inside the build container;

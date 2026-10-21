@@ -60,7 +60,7 @@ by `/healthz` always agree. The workflow needs two repository secrets:
 `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
 
 ```bash
-docker pull ariacompute/mcpx:<version>   # e.g. 1.2.3 (the release tag minus its v)
+docker pull ariacompute/mcpx:<version>  # e.g. 1.2.3 (the release tag minus its v)
 docker run --rm -e MCPX_TOKEN=$(openssl rand -hex 24) \
   -p 127.0.0.1:8848:8848 ariacompute/mcpx:1.2.3
 ```
@@ -70,8 +70,8 @@ linux/amd64, linux/arm64, darwin/amd64, darwin/arm64 and windows/amd64, plus one
 `SHA256SUMS.txt` covering all of them:
 
 ```bash
-tar xzf mcpx-1.2.3-linux-amd64.tar.gz      # mcpx + LICENSE
-./mcpx version                             # mcpx 1.2.3 (<commit>) ...
+tar xzf mcpx-1.2.3-linux-amd64.tar.gz  # mcpx + LICENSE
+./mcpx version                         # mcpx 1.2.3 (<commit>) ...
 ```
 
 macOS builds are **not code-signed or notarized** (no certificate is configured), so a
@@ -210,6 +210,29 @@ MCP client snippet (Claude Desktop, IDE plugins, agent runtimes):
 
 stdout belongs to the protocol and every log line goes to stderr; EOF is a clean shutdown.
 
+## Examples
+
+`example/` is a runnable pair, in Python, with no dependencies to install: a small notes
+REST service that knows nothing about MCP, and two MCP clients for it — one over Streamable
+HTTP, one over stdio — both using the same config.
+
+```bash
+python3 example/python-http/server.py --port 18081 &
+./bin/mcpx serve -c example/mcpx.example.yaml &
+
+python3 example/python-http/client.py                       # HTTP: POST /mcp, session header
+python3 example/python-stdio/client.py --mcpx ./bin/mcpx \
+  --config example/mcpx.example.yaml                        # stdio: NDJSON on a child process
+```
+
+Each client walks a real session (handshake, `tools/list`, `tools/call`, both failure modes,
+`DELETE` or EOF) and ends with `PASS`. See `example/README.md` for what the config
+demonstrates; the whole thing, assertions and cleanup included, is one command:
+
+```bash
+make example-test  # both transports; EXAMPLE_{UPSTREAM,GATEWAY}_PORT override ports
+```
+
 ## Security model
 
 - Listens on `127.0.0.1` by default; front it with nginx and enable `server.auth` before
@@ -238,14 +261,15 @@ stdout belongs to the protocol and every log line goes to stderr; EOF is a clean
 ## Development
 
 ```bash
-make build       # bin/mcpx (version/commit/date injected via -ldflags)
-make test        # go test -race ./...
-make vet         # go vet ./...
-make cover       # whole-repo coverage summary (coverage.out, gitignored)
-make cover-html  # generate and open the HTML coverage report
-make check       # validate the example config and list its tools
-make run         # run the HTTP endpoint in the foreground
-make stdio       # run the stdio transport in the foreground
+make build         # bin/mcpx (version/commit/date injected via -ldflags)
+make test          # go test -race ./...
+make vet           # go vet ./...
+make cover         # whole-repo coverage summary (coverage.out, gitignored)
+make cover-html    # generate and open the HTML coverage report
+make check         # validate the example config and list its tools
+make run           # run the HTTP endpoint in the foreground
+make stdio         # run the stdio transport in the foreground
+make example-test  # example/ end-to-end over both transports (see "Examples")
 ```
 
 Tests are fully offline (`httptest` + `io.Pipe`) and `go test -race ./...` is green;
@@ -265,6 +289,8 @@ internal/upstream   HTTP client, path templates, operations, restricted passthro
 internal/gateway    config -> tool index, call dispatch
 internal/transport  httpsrv (sessions/auth/202/DELETE), stdio (line loop)
 tests               httptest end-to-end
+example             Python notes service + MCP clients over HTTP and stdio
+scripts             one-command tests for example/ (bash)
 ```
 
 The only third-party dependency is `gopkg.in/yaml.v3` (it parses both YAML and JSON);

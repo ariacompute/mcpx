@@ -56,7 +56,7 @@ curl -s http://127.0.0.1:8848/healthz
 `DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`。
 
 ```bash
-docker pull ariacompute/mcpx:<version>   # 例如 1.2.3（release tag 去掉 v）
+docker pull ariacompute/mcpx:<version>  # 例如 1.2.3（release tag 去掉 v）
 docker run --rm -e MCPX_TOKEN=$(openssl rand -hex 24) \
   -p 127.0.0.1:8848:8848 ariacompute/mcpx:1.2.3
 ```
@@ -65,8 +65,8 @@ docker run --rm -e MCPX_TOKEN=$(openssl rand -hex 24) \
 darwin/arm64、windows/amd64 的独立压缩包，以及覆盖全部的单个 `SHA256SUMS.txt`：
 
 ```bash
-tar xzf mcpx-1.2.3-linux-amd64.tar.gz      # mcpx + LICENSE
-./mcpx version                             # mcpx 1.2.3 (<commit>) ...
+tar xzf mcpx-1.2.3-linux-amd64.tar.gz  # mcpx + LICENSE
+./mcpx version                         # mcpx 1.2.3 (<commit>) ...
 ```
 
 macOS 包**未做代码签名与公证**（未配置证书），下载后会被 Gatekeeper 隔离，可
@@ -199,6 +199,28 @@ MCP 客户端配置片段（例如 Claude Desktop / IDE 插件）：
 
 stdout 是协议通道，所有日志走 stderr；读到 EOF 即正常退出。
 
+## 示例
+
+`example/` 是一对可直接运行的 Python 示例，不用装任何依赖：一个对 MCP 一无所知的
+notes REST 服务，加两个 MCP 客户端（Streamable HTTP 与 stdio），共用同一份配置。
+
+```bash
+python3 example/python-http/server.py --port 18081 &
+./bin/mcpx serve -c example/mcpx.example.yaml &
+
+python3 example/python-http/client.py                       # HTTP：POST /mcp + 会话头
+python3 example/python-stdio/client.py --mcpx ./bin/mcpx \
+  --config example/mcpx.example.yaml                        # stdio：子进程上的 NDJSON
+```
+
+两个客户端都走完整会话（握手、`tools/list`、`tools/call`、两种失败形态、`DELETE` 或
+EOF），最后打印 `PASS`。配置在演示什么见 `example/README_cn.md`；连带断言与清理的
+一条命令版本：
+
+```bash
+make example-test  # 两种传输都跑；EXAMPLE_{UPSTREAM,GATEWAY}_PORT 可改端口
+```
+
 ## 安全模型
 
 - 默认只监听 `127.0.0.1`；对外暴露请前置 nginx 并启用 `server.auth`。
@@ -224,14 +246,15 @@ stdout 是协议通道，所有日志走 stderr；读到 EOF 即正常退出。
 ## 开发
 
 ```bash
-make build       # bin/mcpx（-ldflags 注入 version/commit/date）
-make test        # go test -race ./...
-make vet         # go vet ./...
-make cover       # 全仓覆盖率汇总（coverage.out，已 gitignore）
-make cover-html  # 生成并在浏览器里看 HTML 报告
-make check       # 用仓库里的示例配置做一次体检
-make run         # 前台运行 HTTP
-make stdio       # 前台运行 stdio
+make build         # bin/mcpx（-ldflags 注入 version/commit/date）
+make test          # go test -race ./...
+make vet           # go vet ./...
+make cover         # 全仓覆盖率汇总（coverage.out，已 gitignore）
+make cover-html    # 生成并在浏览器里看 HTML 报告
+make check         # 用仓库里的示例配置做一次体检
+make run           # 前台运行 HTTP
+make stdio         # 前台运行 stdio
+make example-test  # example/ 两种传输的端到端测试（见「示例」）
 ```
 
 测试全离线（`httptest` + `io.Pipe`），`go test -race ./...` 全绿；当前语句覆盖率约
@@ -250,6 +273,8 @@ internal/upstream   HTTP 客户端、路径模板、operation、受限透传、�
 internal/gateway    配置 → 工具索引、调用分发
 internal/transport  httpsrv（会话/鉴权/202/DELETE）、stdio（行循环）
 tests               httptest 端到端
+example             Python notes 服务 + HTTP/stdio 两种 MCP 客户端
+scripts             example/ 的一键测试脚本（bash）
 ```
 
 唯一第三方依赖是 `gopkg.in/yaml.v3`（同时解析 YAML 与 JSON），其余全部标准库。

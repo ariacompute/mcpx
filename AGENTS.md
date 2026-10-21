@@ -28,6 +28,8 @@ internal/transport/stdio     NDJSON 行循环（stdout 仅协议）
 internal/version  版本戳（-ldflags 注入）
 tests             httptest 端到端
 deploy/           容器专用配置（0.0.0.0 监听 + 演示上游）
+example/          Python 接入示例（notes 上游 + HTTP/stdio 两个客户端 + 共享配置）
+scripts/          example/ 的一键测试脚本（bash）
 ```
 
 依赖方向（单向）：
@@ -114,6 +116,9 @@ make cover-html # HTML 覆盖率报告
 make check      # 用 mcpx.yaml 做配置体检并列出工具
 make run        # 前台跑 HTTP
 make stdio      # 前台跑 stdio
+make example-test-http   # example/ 端到端：起 notes 服务 + 网关 + HTTP 客户端
+make example-test-stdio  # 同上，但由 stdio 客户端自己拉起网关
+make example-test        # 两条都跑
 make docker-build   # 本地构建镜像（--network=host，便于走宿主代理）
 make compose-config # 只渲染 compose，不构建
 make compose-up     # 构建并启动网关 + 演示上游
@@ -154,6 +159,12 @@ make tidy       # go mod tidy
   真的带版本戳，静默退回 `dev` 会直接失败。
 - 前置条件：仓库需配 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`；macOS 包未签名公证，README
   已写明 Gatekeeper 处理方式，不要删这段。
+- 示例（`example/`）：**Python 3.9+ 标准库，零 pip 依赖**，不引入 SDK；协议信封手写就是为了
+  让人看清线上到底发了什么。示例服务只绑回环，脚本只与本机端口交互。
+- 示例端口写死在 `example/mcpx.example.yaml`（配置不做环境变量展开，这是有意的）：脚本用
+  `sed` 改写一份临时副本，改端口只加 `EXAMPLE_UPSTREAM_PORT` / `EXAMPLE_GATEWAY_PORT`。
+- 改示例或脚本时守住三条：客户端 stdout 只放结果（诊断走 stderr）、每个脚本 `trap` 清理且
+  端口预检给出可读报错、`make example-test` 两条传输都要绿。
 - 预编译路由在启动期完成：`tools/list` 顺序稳定、无每请求重复解析；改配置需重启。
 - 会话只存在内存：重启即失效，客户端需重新 `initialize`（这不是缺陷，是设计）。
 
@@ -164,4 +175,5 @@ make tidy       # go mod tidy
 | v1 | MCP 网关：YAML/JSON 配置、HTTP + stdio、operation 工具 + 受限透传、Bearer 鉴权、限长/超时/前缀白名单、端到端测试 | 已实现 |
 | v1.1 | header 参数允许连字符（大小写不敏感去重）、`/` 前缀覆盖全部路径、覆盖率提升到 91.8%、新增 `make cover` | 已实现 |
 | v1.2 | 容器化：多阶段 Dockerfile、compose（网关 + 演示上游）、`deploy/mcpx.docker.yaml`、`make docker-build/compose-*`、发布工作流（release 触发 → 校验 → DockerHub 双架构镜像 + 三平台二进制与 SHA256SUMS） | 已实现 |
+| v1.3 | Python 接入示例（notes 上游 + Streamable HTTP 客户端 + stdio 客户端 + 共享配置）与 `scripts/` 一键测试（`make example-test-http/stdio/test`） | 已实现 |
 | 后续 | 可选指标端点、上游重试与熔断 | 未开始 |

@@ -1,0 +1,117 @@
+# mcpx example configuration: one HTTP service, five MCP tools.
+#
+#   python3 example/python-http/server.py --port 18081     # the upstream
+#   ./bin/mcpx serve -c example/mcpx.example.yaml          # the gateway
+#
+# Every operation below becomes one tool named "<upstream>_<operation>", so this
+# file publishes notes_list / notes_get / notes_create / notes_delete, plus the
+# restricted generic notes_request. Verified with `mcpx check`:
+#
+#   upstreams: 1, tools: 5
+#
+# Ports are the defaults the test scripts use; scripts/test-example-*.sh rewrite
+# them into a temp copy when EXAMPLE_UPSTREAM_PORT / EXAMPLE_GATEWAY_PORT are
+# set, because this file (deliberately) has no environment expansion.
+server:
+  listen: 127.0.0.1:18848
+  path: /mcp
+  # No authentication: the listener is loopback-only and the example is meant to
+  # run with one command. Before exposing it on any other interface, switch to
+  # the bearer block from deploy/mcpx.docker.yaml:
+  #
+  #   auth:
+  #     scheme: bearer
+  #     token_env: MCPX_TOKEN
+  auth:
+    scheme: none
+  protocol_versions:
+    - "2025-06-18"
+    - "2025-03-26"
+  # Empty = loopback Origins only, which is all a local client needs.
+  allowed_origins: []
+  max_request_bytes: 1048576
+  session_ttl: 30m
+  shutdown_grace: 15s
+
+# Inherited by every upstream that does not override them. 5s is short on
+# purpose: a hung upstream shows up as an isError result instead of a stall.
+defaults:
+  timeout: 5s
+  max_response_bytes: 1048576
+  max_body_bytes: 262144
+
+upstreams:
+  - name: notes
+    base_url: http://127.0.0.1:18081
+    auth:
+      scheme: none
+    timeout: 3s
+    # Every path this upstream may be asked for, for operations and for the
+    # passthrough below. `/api` covers `/api` and `/api/...` but not `/apix`.
+    allow_prefixes:
+      - /api
+    operations:
+      - name: list
+        description: List notes, optionally filtered by tag.
+        method: GET
+        path: /api/notes
+        params:
+          - name: tag
+            in: query
+            required: false
+            description: Only return notes carrying this tag.
+            schema:
+              type: string
+
+      - name: get
+        description: Fetch one note by id.
+        method: GET
+        path: /api/notes/{id}
+        params:
+          - name: id
+            in: path
+            required: true
+            description: Note id, as returned by notes_list.
+            schema:
+              type: string
+
+      - name: create
+        description: Create a note. The object is sent as the JSON request body.
+        method: POST
+        path: /api/notes
+        # The one body parameter; its value becomes the whole request body.
+        body_param: note
+        params:
+          - name: note
+            in: body
+            required: true
+            description: Note object, sent as JSON.
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  description: Note body, must be non-empty.
+                tag:
+                  type: string
+                  description: Free-form tag, defaults to "general".
+
+      - name: delete
+        description: Delete one note by id. Answers 204, so the tool returns no content.
+        method: DELETE
+        path: /api/notes/{id}
+        params:
+          - name: id
+            in: path
+            required: true
+            schema:
+              type: string
+
+    # One generic tool where the caller picks method and path, confined to the
+    # allowlist. allow_prefixes is inherited from the upstream because the block
+    # leaves it empty.
+    passthrough:
+      enabled: true
+      name: notes_request
+      methods: [GET, POST]

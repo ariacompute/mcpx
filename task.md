@@ -152,6 +152,46 @@
   多架构推送与 release 资产上传未在真实 Actions 跑过（本地无 QEMU binfmt，也没有
   DockerHub 凭据），首次发布时需人工确认镜像可见性与资产齐全。
 
+## 阶段 10 — 接入示例与测试脚本
+
+- `example/mcpx.example.yaml`：一份配置发布 5 个工具（`notes_list` / `notes_get` /
+  `notes_create` / `notes_delete` / `notes_request`）。上游 `notes` 指向
+  `127.0.0.1:18081`，`allow_prefixes: [/api]`；passthrough 的 `allow_prefixes` 留空，
+  以继承上游白名单。网关 `127.0.0.1:18848/mcp`，`auth.scheme: none`（回环 + 一条命令可跑），
+  注释里写明对外暴露前要换成 bearer。
+- `example/python-http/server.py`：标准库 `ThreadingHTTPServer`，内存 notes（2 条种子）。
+  路由 `GET /healthz`、`GET /api/notes?tag=`、`GET /api/notes/{id}`、`POST /api/notes`、
+  `DELETE /api/notes/{id}`。`POST` 校验 `Content-Type` 与 `{"text": str, "tag"?: str}`，
+  错误统一 JSON 错误体（400/404/405/415）。SIGINT/SIGTERM 在**另一个线程**里调 `shutdown()`
+  —— `serve_forever` 阻塞，直接调会自锁。
+- `example/python-http/client.py`：`McpHttpClient` 覆盖 `initialize`（抓 `Mcp-Session-Id`，
+  缺失即报错）、`notifications/initialized`（断言 202 + 空正文）、`tools/list`（跟随
+  `nextCursor`）、`tools/call`、`DELETE`（断言 204）。演示链：创建 → 按 tag 列表 → 取单条 →
+  删除，外加两条**预期失败**（未知工具 `-32602`、缺必填参数 `isError: true`）。
+- `example/python-stdio/client.py`：`subprocess.Popen` 拉起 `mcpx stdio -c <config>`，一行
+  一条 JSON。读端用线程 + `queue` 做超时（直接 `readline()` 在网关异常时会永久挂住），按
+  `id` 匹配应答并跳过通知；`close()` 关 stdin 触发 EOF，超时再 terminate/kill。子进程 stderr
+  直接继承，日志与协议自然分开。
+- `scripts/example-lib.sh` + `scripts/test-example-http.sh` / `test-example-stdio.sh`：端口
+  预检（bash `/dev/tcp`，不依赖 nc/lsof）、健康检查轮询、`trap` 清理、失败时打印日志尾巴、
+  `KEEP=1` 保留进程。配置里的端口是写死的，脚本用 `sed` 生成临时副本实现
+  `EXAMPLE_UPSTREAM_PORT` / `EXAMPLE_GATEWAY_PORT` 覆盖。
+- `Makefile`：新增 `example-test-http` / `example-test-stdio` / `example-test`（依赖 `build`，
+  转发端口与 `KEEP`）；`.dockerignore` 排除 `example/` 与 `scripts/`。
+- 文档：`example/README{,_cn}.md`（怎么跑、配置在演示什么、注意事项）、主 README 中英
+  「示例」小节与目录树、`AGENTS.md`（目录/命令/注意事项/需求状态）、`requirements.md`
+  （1.1 范围内、1.2 范围外、验收、变更记录）。
+
+验证（本机 Python 3.12.3）：
+- `mcpx check -c example/mcpx.example.yaml` → `upstreams: 1, tools: 5`，五个工具名逐条核对。
+- `make example-test-http`：`/healthz` 报 `"tools":5`；客户端打印握手、202、5 个工具、
+  创建/列表/取/删、`-32602`、`isError`、`DELETE 204`，末行 `PASS`。
+- `make example-test-stdio`：同一链路走 stdio，客户端 stdout 不含 `"level"`（脚本断言），
+  末尾 `stdin closed -> gateway exited with 0`。
+- 端口覆盖跑过一次（`EXAMPLE_*_PORT` 改成 2xxxx），退出码 0；结束后 `pgrep` 无残留进程。
+- 失败路径：端口被占用时给出 `example service port 18081 is already in use; ...`，
+  而不是子进程的模糊报错。
+
 ## 测试期发现并修复的问题
 
 1. **header 参数名不允许连字符**：`X-Trace` 这类标准写法被参数名校验拒绝。
@@ -171,6 +211,12 @@
 - `http.MethodHead` 在数据面被允许，但 `GET/HEAD {path}` 在 MCP 端点上固定 405。
 - compose 未使用 `${MCPX_TOKEN:?}`：那会让 `down/ps/logs` 也因缺变量失败；代价是缺
   token 时容器进入重启循环（日志有明确原因），用 `docker compose logs mcpx` 即可定位。
+- 示例配置里的端口是写死的（配置本就不做环境变量展开，这是有意的设计），端口覆盖因此落在
+  测试脚本一侧：`sed` 生成临时副本，示例配置本身保持「打开就能读」。
+- 两个 Python 客户端各自独立、互不 import：示例的价值是能 `python3 example/.../client.py`
+  单文件跑通，抽公共包反而增加读者要同时看两个文件的门槛。代价是约 120 行的重复。
+- 示例服务刻意不做持久化与并发压力，也不实现 OPTIONS/CORS：它演示的是「mcpx 发出什么
+  请求、收到什么状态码就映射成 `isError`」，不是一份生产级 REST 服务。
 
 ## 后续待办
 
