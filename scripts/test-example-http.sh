@@ -36,6 +36,12 @@ init_work_dir
 config="$WORK/mcpx.example.yaml"
 render_example_config "$CONFIG_SRC" "$config" "$UPSTREAM_PORT" "$GATEWAY_PORT"
 
+# The example gateway runs with server.auth.scheme=bearer, so it refuses to
+# start without this variable. A fixed loopback-only value keeps the "one
+# command" promise; export your own to exercise a real secret. The client reads
+# the same variable for its default --token.
+export MCPX_TOKEN=${MCPX_TOKEN:-ci-example-token}
+
 say "validating the example config"
 check_output=$("$mcpx" check -c "$config" 2>/dev/null)
 printf '%s\n' "$check_output"
@@ -61,6 +67,16 @@ health=$(curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/healthz")
 printf '%s\n' "$health" | grep -q '"tools":5' ||
   die "gateway /healthz does not report five tools: ${health}"
 note "$health"
+
+# /healthz is deliberately open; the MCP endpoint is not. Without this check a
+# bearer config that silently degraded to none would still pass everything else.
+say "checking that an unauthenticated request is rejected"
+unauth_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -X POST "http://127.0.0.1:${GATEWAY_PORT}/mcp" \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}')
+[ "$unauth_status" = "401" ] || die "an unauthenticated initialize answered ${unauth_status}, want 401"
+note "401 without Authorization"
 
 say "running the HTTP client"
 set +e

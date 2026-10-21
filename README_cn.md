@@ -20,13 +20,33 @@ MCP 客户端 ──HTTP POST /mcp──┐
 ## 快速开始
 
 ```bash
-make build                           # 产出 bin/mcpx（带 git 版本戳）
+# 1. 先构建一次：bin/mcpx 是静态二进制，git 版本戳（version / commit / date）通过
+#    -ldflags 注入，所以 `mcpx version` 与 /healthz 能说清跑的是哪个 revision。
+make build
+
+# 2. 在自己的副本上改。mcpx.yaml 是仓库里的示例（指向 petstore.example.com），
+#    *.local.yaml 已 gitignore，你的改动（以及没写完的上游）不会进仓库。
 cp mcpx.yaml mcpx.local.yaml
-export MCPX_TOKEN=...                # MCP 端点的 bearer token
-export PETSTORE_TOKEN=...            # 上游凭据（只写环境变量名）
-./bin/mcpx check -c mcpx.local.yaml  # 只校验配置并列出工具
-./bin/mcpx serve -c mcpx.local.yaml  # 默认命令，监听 127.0.0.1:8848
-./bin/mcpx stdio -c mcpx.local.yaml  # 本地客户端直挂
+
+# 3. 凭据只走环境变量，不写进配置：
+#    MCPX_TOKEN 是客户端访问 /mcp 必须出示的 token —— mcpx.local.yaml 在
+#    server.auth.token_env 里引用它，为空则进程拒绝启动；
+#    PETSTORE_TOKEN 是那个上游的 bearer token，调用时读取，缺了只会让该次工具调用
+#    变成 isError 结果，不会影响网关运行。
+export MCPX_TOKEN=...
+export PETSTORE_TOKEN=...
+
+# 4. 先体检：逐个校验 URL、路径模板、工具名冲突、透传白名单与凭据变量名。
+#    不启动任何服务、不需要 token 值，通过后会把工具清单打出来。
+./bin/mcpx check -c mcpx.local.yaml
+
+# 5. 用 Streamable HTTP 提供 MCP 端点 —— 这是默认命令，
+#    所以 `./bin/mcpx -c mcpx.local.yaml` 等价。
+./bin/mcpx serve -c mcpx.local.yaml
+
+# 6. 或改用 stdio 暴露同一批工具，供“自己拉起进程、在 stdin/stdout 上收发
+#    按行 JSON-RPC”的客户端使用。
+./bin/mcpx stdio -c mcpx.local.yaml
 ```
 
 `check` 通过即代表：URL 合法、路径模板可编译、工具名无冲突、透传前缀非空、凭据变量名
@@ -205,12 +225,23 @@ stdout 是协议通道，所有日志走 stderr；读到 EOF 即正常退出。
 notes REST 服务，加两个 MCP 客户端（Streamable HTTP 与 stdio），共用同一份配置。
 
 ```bash
-python3 example/python-http/server.py --port 18081 &
-./bin/mcpx serve -c example/mcpx.example.yaml &
+# 1. 上游（终端 1）：普通 REST 服务，与 MCP 无关。这些路由就是 mcpx 要发布的接口，
+#    GET /healthz 表示它已就绪。
+python3 example/python-http/server.py --port 18081
 
-python3 example/python-http/client.py                       # HTTP：POST /mcp + 会话头
-python3 example/python-stdio/client.py --mcpx ./bin/mcpx \
-  --config example/mcpx.example.yaml                        # stdio：子进程上的 NDJSON
+# 2. 网关（终端 2）：在 127.0.0.1:18848/mcp 发布五个工具。开的是 bearer 鉴权，
+#    没有 token 会直接退出；这里除 mcpx 外没人校验该值，随便生成一个即可
+#    （`openssl rand -hex 24`）。
+export MCPX_TOKEN=...
+./bin/mcpx serve -c example/mcpx.example.yaml
+
+# 3a. Streamable HTTP 客户端（终端 3）：带 Authorization: Bearer $MCPX_TOKEN 去
+#     POST /mcp（--token 默认取该变量），走完一个完整会话。
+python3 example/python-http/client.py --url http://127.0.0.1:18848/mcp
+
+# 3b. stdio 客户端（终端 3，与 3a 二选一）：不连终端 2，自己拉起 `mcpx stdio`
+#     子进程，一行一条 JSON-RPC；不需要 token —— stdin/stdout 就是传输通道。
+python3 example/python-stdio/client.py --mcpx ./bin/mcpx --config example/mcpx.example.yaml
 ```
 
 两个客户端都走完整会话（握手、`tools/list`、`tools/call`、两种失败形态、`DELETE` 或
@@ -220,6 +251,9 @@ EOF），最后打印 `PASS`。配置在演示什么见 `example/README_cn.md`�
 ```bash
 make example-test  # 两种传输都跑；EXAMPLE_{UPSTREAM,GATEWAY}_PORT 可改端口
 ```
+
+示例网关保留 `server.auth.scheme: bearer`（与容器同一姿态），启动必须有 `MCPX_TOKEN`；
+测试目标在变量未设置时会填一个只在本机回环用的占位值。
 
 ## 安全模型
 
@@ -251,7 +285,7 @@ make test          # go test -race ./...
 make vet           # go vet ./...
 make cover         # 全仓覆盖率汇总（coverage.out，已 gitignore）
 make cover-html    # 生成并在浏览器里看 HTML 报告
-make check         # 用仓库里的示例配置做一次体检
+make check         # 用仓库里的示例配置做一次体检，并列出工具
 make run           # 前台运行 HTTP
 make stdio         # 前台运行 stdio
 make example-test  # example/ 两种传输的端到端测试（见「示例」）

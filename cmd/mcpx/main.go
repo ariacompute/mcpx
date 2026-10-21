@@ -60,7 +60,7 @@ Usage:
   mcpx serve   [-c config.yaml] [-v]   serve Streamable HTTP (default command)
   mcpx stdio   [-c config.yaml] [-v]   serve newline-delimited JSON-RPC on stdin/stdout
   mcpx check   [-c config.yaml]        validate the config and list the tools
-  mcpx version                          print the build stamp
+  mcpx version                         print the build stamp
 
 The config path defaults to $MCPX_CONFIG or ./mcpx.yaml.
 `)

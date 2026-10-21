@@ -157,8 +157,9 @@
 - `example/mcpx.example.yaml`：一份配置发布 5 个工具（`notes_list` / `notes_get` /
   `notes_create` / `notes_delete` / `notes_request`）。上游 `notes` 指向
   `127.0.0.1:18081`，`allow_prefixes: [/api]`；passthrough 的 `allow_prefixes` 留空，
-  以继承上游白名单。网关 `127.0.0.1:18848/mcp`，`auth.scheme: none`（回环 + 一条命令可跑），
-  注释里写明对外暴露前要换成 bearer。
+  以继承上游白名单。网关 `127.0.0.1:18848/mcp`，**`server.auth.scheme: bearer`**（与容器
+  同一姿态，缺 `MCPX_TOKEN` 直接拒绝启动）；上游那一跳保持 `scheme: none`，因为 notes
+  服务不校验 `Authorization`，加了只会让每次调用因一个没人看的 token 失败。
 - `example/python-http/server.py`：标准库 `ThreadingHTTPServer`，内存 notes（2 条种子）。
   路由 `GET /healthz`、`GET /api/notes?tag=`、`GET /api/notes/{id}`、`POST /api/notes`、
   `DELETE /api/notes/{id}`。`POST` 校验 `Content-Type` 与 `{"text": str, "tag"?: str}`，
@@ -175,7 +176,10 @@
 - `scripts/example-lib.sh` + `scripts/test-example-http.sh` / `test-example-stdio.sh`：端口
   预检（bash `/dev/tcp`，不依赖 nc/lsof）、健康检查轮询、`trap` 清理、失败时打印日志尾巴、
   `KEEP=1` 保留进程。配置里的端口是写死的，脚本用 `sed` 生成临时副本实现
-  `EXAMPLE_UPSTREAM_PORT` / `EXAMPLE_GATEWAY_PORT` 覆盖。
+  `EXAMPLE_UPSTREAM_PORT` / `EXAMPLE_GATEWAY_PORT` 覆盖。HTTP 脚本 `export
+  MCPX_TOKEN=${MCPX_TOKEN:-ci-example-token}` 让「一条命令」与 bearer 并存，并额外断言
+  不带 Authorization 的 `initialize` 返回 401 —— 否则鉴权静默退化成 none 也能一路绿。
+  stdio 脚本不需要 token：stdio 传输不经过 `server.auth`。
 - `Makefile`：新增 `example-test-http` / `example-test-stdio` / `example-test`（依赖 `build`，
   转发端口与 `KEEP`）；`.dockerignore` 排除 `example/` 与 `scripts/`。
 - 文档：`example/README{,_cn}.md`（怎么跑、配置在演示什么、注意事项）、主 README 中英

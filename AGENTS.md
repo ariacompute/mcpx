@@ -161,6 +161,9 @@ make tidy       # go mod tidy
   已写明 Gatekeeper 处理方式，不要删这段。
 - 示例（`example/`）：**Python 3.9+ 标准库，零 pip 依赖**，不引入 SDK；协议信封手写就是为了
   让人看清线上到底发了什么。示例服务只绑回环，脚本只与本机端口交互。
+- 示例网关开 bearer（与容器同一姿态）：缺 `MCPX_TOKEN` 拒绝启动；HTTP 测试脚本在变量未设置时
+  填 `ci-example-token` 并断言不带 token 的 `initialize` 是 401，别把这条断言删掉 —— 它防的是
+  鉴权静默退化成 none。上游那一跳是 `scheme: none`，因为示例服务不校验 `Authorization`。
 - 示例端口写死在 `example/mcpx.example.yaml`（配置不做环境变量展开，这是有意的）：脚本用
   `sed` 改写一份临时副本，改端口只加 `EXAMPLE_UPSTREAM_PORT` / `EXAMPLE_GATEWAY_PORT`。
 - 改示例或脚本时守住三条：客户端 stdout 只放结果（诊断走 stderr）、每个脚本 `trap` 清理且

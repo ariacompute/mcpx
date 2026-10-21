@@ -1,7 +1,12 @@
 # mcpx example configuration: one HTTP service, five MCP tools.
 #
+#   export MCPX_TOKEN=$(openssl rand -hex 24)              # token for the endpoint
 #   python3 example/python-http/server.py --port 18081     # the upstream
 #   ./bin/mcpx serve -c example/mcpx.example.yaml          # the gateway
+#
+# The gateway requires that token: pointing an MCP client at the endpoint means
+# sending `Authorization: Bearer $MCPX_TOKEN`. scripts/test-example-*.sh default
+# it to a fixed loopback-only value so the tests stay one command.
 #
 # Every operation below becomes one tool named "<upstream>_<operation>", so this
 # file publishes notes_list / notes_get / notes_create / notes_delete, plus the
@@ -15,15 +20,14 @@
 server:
   listen: 127.0.0.1:18848
   path: /mcp
-  # No authentication: the listener is loopback-only and the example is meant to
-  # run with one command. Before exposing it on any other interface, switch to
-  # the bearer block from deploy/mcpx.docker.yaml:
-  #
-  #   auth:
-  #     scheme: bearer
-  #     token_env: MCPX_TOKEN
+  # Bearer auth is on: without MCPX_TOKEN the process logs
+  # `authentication misconfigured` and exits, which is the point — an endpoint
+  # that silently starts open because of a typo is the worse failure. Holding the
+  # token in an environment variable (never in this file) is also why the example
+  # is one `export` away from a real secret.
   auth:
-    scheme: none
+    scheme: bearer
+    token_env: MCPX_TOKEN
   protocol_versions:
     - "2025-06-18"
     - "2025-03-26"
@@ -43,6 +47,8 @@ defaults:
 upstreams:
   - name: notes
     base_url: http://127.0.0.1:18081
+    # No credential on this hop: the notes service ignores Authorization, and a
+    # bearer block here would make every call fail on a token nothing checks.
     auth:
       scheme: none
     timeout: 3s

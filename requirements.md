@@ -256,7 +256,8 @@ POST/PUT/PATCH/DELETE；`body_param` 必须指向 `in=body` 的参数。
 - [x] 示例：`mcpx check -c example/mcpx.example.yaml` 列出 5 个工具；
       `make example-test-http` 与 `make example-test-stdio` 各自通过（握手、202、`tools/list`、
       `tools/call` 增删查、未知工具 `-32602`、缺参 `isError`、DELETE/EOF），
-      端口可覆盖、过程无残留进程、客户端 stdout 无日志污染。
+      端口可覆盖、过程无残留进程、客户端 stdout 无日志污染；示例网关开 bearer，
+      未带 `Authorization` 的 `initialize` 返回 401，缺 `MCPX_TOKEN` 时拒绝启动。
 - [x] 文档同步：`README.md`、`README_cn.md`、`requirements.md`、`task.md`、`AGENTS.md`
       与实现一致。
 
@@ -267,4 +268,4 @@ POST/PUT/PATCH/DELETE；`body_param` 必须指向 `in=body` 的参数。
 | v1 | 首个实现：配置/协议/双传输/两种工具粒度/安全模型/端到端测试 |
 | v1.1 | header 参数允许连字符并做大小写不敏感去重；根前缀 `/` 覆盖全部路径；覆盖率 75% → 91.8%；新增 `make cover` / `cover-html`；文档三件套补齐 |
 | v1.2 | 容器化：多阶段 Dockerfile（非 root、健康检查、版本戳）、compose（网关 + 演示上游、只读根文件系统、回环发布）、`deploy/mcpx.docker.yaml`、`.env.example`、`make docker-build/compose-*`、`.github/workflows/release.yml`（release 触发：校验 → DockerHub 双架构镜像 + linux/macOS/Windows 二进制与 `SHA256SUMS.txt`） |
-| v1.3 | 接入示例与测试：`example/`（Python 标准库 notes 服务 + Streamable HTTP 客户端 + stdio 客户端 + 共享 `mcpx.example.yaml`）、`scripts/`（`example-lib.sh` + 两条一键测试）、`make example-test-http/stdio/test`、`example/README{,_cn}.md` |
+| v1.3 | 接入示例与测试：`example/`（Python 标准库 notes 服务 + Streamable HTTP 客户端 + stdio 客户端 + 共享 `mcpx.example.yaml`，网关开 bearer）、`scripts/`（`example-lib.sh` + 两条一键测试，含 401 断言）、`make example-test-http/stdio/test`、`example/README{,_cn}.md` |

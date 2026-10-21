@@ -23,20 +23,23 @@ Terminal 1 — the upstream HTTP service:
 python3 example/python-http/server.py --port 18081
 ```
 
-Terminal 2 — the gateway:
+Terminal 2 — the gateway (it refuses to start without a token):
 
 ```bash
-make build                                  # produces bin/mcpx
+make build                                     # produces bin/mcpx
+# export MCPX_TOKEN=$(openssl rand -hex 24)
+export MCPX_TOKEN=...                          # bearer token for the endpoint
 ./bin/mcpx serve -c example/mcpx.example.yaml
 ```
 
 Terminal 3 — either client:
 
 ```bash
-# Streamable HTTP, against the gateway from terminal 2
+# Streamable HTTP, against the gateway from terminal 2 (takes --token from $MCPX_TOKEN)
 python3 example/python-http/client.py --url http://127.0.0.1:18848/mcp
 
-# stdio, which starts its own gateway (the one in terminal 2 stays unused)
+# stdio, which starts its own gateway (the one in terminal 2 stays unused).
+# No token here: stdin/stdout is the transport, there is no network endpoint.
 python3 example/python-stdio/client.py --mcpx ./bin/mcpx --config example/mcpx.example.yaml
 ```
 
@@ -46,12 +49,12 @@ broke. Results go to stdout, the running narrative to stderr.
 Or run the whole thing, including assertions and cleanup, in one command:
 
 ```bash
-make example-test          # both transports
-make example-test-http     # Streamable HTTP only
-make example-test-stdio    # stdio only
+make example-test              # both transports
+make example-test-http         # Streamable HTTP only
+make example-test-stdio        # stdio only
 
 EXAMPLE_UPSTREAM_PORT=28081 EXAMPLE_GATEWAY_PORT=28848 make example-test-http
-KEEP=1 make example-test-http     # leave the processes running
+KEEP=1 make example-test-http  # leave the processes running
 ```
 
 ## What the config shows
@@ -77,10 +80,15 @@ anything — that is also what the test scripts assert first.
   scripts rewrite the two lines into a temp copy when
   `EXAMPLE_UPSTREAM_PORT` / `EXAMPLE_GATEWAY_PORT` are set; the Python clients
   take their endpoint from `--port` / `--url`.
-- **No authentication**: `server.auth.scheme: none` keeps the example to one
-  command, and the listener is loopback-only. Before exposing it anywhere else,
-  switch to the bearer block from `deploy/mcpx.docker.yaml` and pass
-  `--token` (or `MCPX_TOKEN`) to the HTTP client.
+- **Bearer auth is on**: an empty `MCPX_TOKEN` makes the gateway exit with
+  `authentication misconfigured`, which is deliberate — an endpoint that
+  silently starts open because of a typo is the worse failure. The listener is
+  loopback-only, so a disposable token is fine; the client's `--token` defaults
+  to `$MCPX_TOKEN`. The test scripts default it to `ci-example-token` when the
+  variable is unset, which is what keeps `make example-test` a single command.
+- **The upstream hop carries no credential**: `upstreams[0].auth.scheme: none`
+  because the notes service ignores `Authorization`; a bearer block there would
+  make every call fail over a token nothing checks.
 - **State is in memory**: the notes service seeds two notes and forgets
   everything else on restart.
 - **Two failure modes are demonstrated on purpose**: an unknown tool is a

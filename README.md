@@ -21,13 +21,36 @@ terminate TLS, cache, or hot-reload; that is a fronting nginx and a restart.
 ## Quick start
 
 ```bash
-make build                           # produces bin/mcpx with a git build stamp
+# 1. Build once: bin/mcpx is a static binary, and the git stamp (version, commit,
+#    date) is injected with -ldflags so `mcpx version` and /healthz can tell you
+#    which revision is actually running.
+make build
+
+# 2. Work on a copy. mcpx.yaml is the committed example pointing at
+#    petstore.example.com; *.local.yaml is gitignored, so your edits (and any
+#    half-finished endpoints) never end up in the repository.
 cp mcpx.yaml mcpx.local.yaml
-export MCPX_TOKEN=...                # bearer token for the MCP endpoint
-export PETSTORE_TOKEN=...            # upstream credential (config stores the variable name only)
-./bin/mcpx check -c mcpx.local.yaml  # validate the config and list the tools
-./bin/mcpx serve -c mcpx.local.yaml  # default command, listens on 127.0.0.1:8848
-./bin/mcpx stdio -c mcpx.local.yaml  # for local clients that launch a process
+
+# 3. Credentials are environment variables, never config values:
+#    MCPX_TOKEN is what clients must send on /mcp — mcpx.local.yaml names it in
+#    server.auth.token_env and the process refuses to start without it;
+#    PETSTORE_TOKEN is that upstream's bearer token, read per call, so a missing
+#    one turns the call into an isError result instead of killing the gateway.
+export MCPX_TOKEN=...
+export PETSTORE_TOKEN=...
+
+# 4. Validate first: every URL and path template, tool-name collisions, the
+#    passthrough allowlist and the credential variable names. Starts nothing,
+#    needs no token values, and prints the tool list on success.
+./bin/mcpx check -c mcpx.local.yaml
+
+# 5. Serve the MCP endpoint over Streamable HTTP — this is the default command,
+#    so `./bin/mcpx -c mcpx.local.yaml` does the same thing.
+./bin/mcpx serve -c mcpx.local.yaml
+
+# 6. Or the same tools over stdio, for clients that launch a process and speak
+#    newline-delimited JSON-RPC on its stdin/stdout.
+./bin/mcpx stdio -c mcpx.local.yaml
 ```
 
 A passing `check` means every URL is valid, every path template compiles, tool names do not
@@ -217,12 +240,24 @@ REST service that knows nothing about MCP, and two MCP clients for it — one ov
 HTTP, one over stdio — both using the same config.
 
 ```bash
-python3 example/python-http/server.py --port 18081 &
-./bin/mcpx serve -c example/mcpx.example.yaml &
+# 1. Upstream (terminal 1): a plain REST service that knows nothing about MCP.
+#    Its routes are what mcpx publishes as tools; GET /healthz means it is ready.
+python3 example/python-http/server.py --port 18081
 
-python3 example/python-http/client.py                       # HTTP: POST /mcp, session header
-python3 example/python-stdio/client.py --mcpx ./bin/mcpx \
-  --config example/mcpx.example.yaml                        # stdio: NDJSON on a child process
+# 2. Gateway (terminal 2): publishes five tools at 127.0.0.1:18848/mcp.
+#    Bearer auth is on, so it exits without a token. Nothing beyond mcpx checks
+#    the value, so `openssl rand -hex 24` is as good as any.
+export MCPX_TOKEN=...
+./bin/mcpx serve -c example/mcpx.example.yaml
+
+# 3a. MCP client over Streamable HTTP (terminal 3): POSTs to /mcp with
+#     Authorization: Bearer $MCPX_TOKEN (its default), one session end to end.
+python3 example/python-http/client.py --url http://127.0.0.1:18848/mcp
+
+# 3b. MCP client over stdio (terminal 3, instead of 3a): starts its own
+#     `mcpx stdio` child rather than using terminal 2, one JSON document per
+#     line, and needs no token — stdin/stdout is the transport.
+python3 example/python-stdio/client.py --mcpx ./bin/mcpx --config example/mcpx.example.yaml
 ```
 
 Each client walks a real session (handshake, `tools/list`, `tools/call`, both failure modes,
@@ -232,6 +267,10 @@ demonstrates; the whole thing, assertions and cleanup included, is one command:
 ```bash
 make example-test  # both transports; EXAMPLE_{UPSTREAM,GATEWAY}_PORT override ports
 ```
+
+The example gateway keeps `server.auth.scheme: bearer` (the same posture as the container),
+so `MCPX_TOKEN` is required to start it; the test targets default it to a loopback-only
+placeholder when the variable is unset.
 
 ## Security model
 
