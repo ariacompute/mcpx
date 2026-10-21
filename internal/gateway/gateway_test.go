@@ -2,12 +2,15 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"mcpx/internal/config"
+	"mcpx/internal/tool"
 )
 
 func discardLogger() *slog.Logger {
@@ -112,6 +115,40 @@ func TestCallMapsInvalidArgumentsToIsError(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Fatalf("result = %+v, want isError", result)
+	}
+}
+
+type failingTool struct{ err error }
+
+func (f failingTool) Name() string                { return "fail" }
+func (f failingTool) Description() string         { return "always fails" }
+func (f failingTool) InputSchema() map[string]any { return map[string]any{"type": "object"} }
+func (f failingTool) Invoke(context.Context, map[string]any) (tool.Result, error) {
+	return tool.Result{}, f.err
+}
+
+func TestCallMapsUnexpectedError(t *testing.T) {
+	registry, err := tool.NewRegistry(failingTool{err: errors.New("exploded")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	built := &Gateway{registry: registry, logger: discardLogger()}
+	result, err := built.Call(context.Background(), "fail", nil)
+	if err != nil {
+		t.Fatalf("Call returned a protocol error: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.Text, "exploded") {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestBuildUsesTheDefaultLogger(t *testing.T) {
+	previous := slog.Default()
+	slog.SetDefault(discardLogger())
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	if _, err := Build(testConfig("https://example.com"), nil); err != nil {
+		t.Fatalf("Build with a nil logger: %v", err)
 	}
 }
 

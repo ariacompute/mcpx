@@ -2,6 +2,7 @@ package stdio
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -162,6 +163,62 @@ func TestCancellationStopsWhileWaiting(t *testing.T) {
 	_ = inWriter.Close()
 	_ = outReader.Close()
 	_ = outWriter.Close()
+}
+
+func TestTrailingLineWithoutNewlineIsProcessed(t *testing.T) {
+	var output bytes.Buffer
+	err := Run(context.Background(), strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`), &output, Options{
+		Server: newServer(t),
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(output.String(), `"result"`) {
+		t.Fatalf("output = %q", output.String())
+	}
+}
+
+func TestBlankLinesAreSkipped(t *testing.T) {
+	var output bytes.Buffer
+	input := "\n\n" + `{"jsonrpc":"2.0","id":1,"method":"ping"}` + "\n\n"
+	if err := Run(context.Background(), strings.NewReader(input), &output, Options{
+		Server: newServer(t),
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if lines := strings.Count(strings.TrimSpace(output.String()), "\n"); lines != 0 {
+		t.Fatalf("blank input produced extra responses: %q", output.String())
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("read failed") }
+
+func TestWriteFailureStopsTheLoop(t *testing.T) {
+	err := Run(context.Background(),
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`+"\n"),
+		failingWriter{},
+		Options{Server: newServer(t), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err == nil || !strings.Contains(err.Error(), "write failed") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestReadFailureStopsTheLoop(t *testing.T) {
+	err := Run(context.Background(), failingReader{}, io.Discard, Options{
+		Server: newServer(t),
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err == nil || !strings.Contains(err.Error(), "read failed") {
+		t.Fatalf("err = %v", err)
+	}
 }
 
 func TestNilServerIsRejected(t *testing.T) {

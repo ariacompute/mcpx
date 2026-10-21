@@ -9,7 +9,7 @@ LDFLAGS := -X mcpx/internal/version.Version=$(VERSION) \
            -X mcpx/internal/version.Commit=$(COMMIT) \
            -X mcpx/internal/version.Date=$(DATE)
 
-.PHONY: all build test vet fmt check run stdio tidy clean
+.PHONY: all build test vet fmt cover cover-html check run stdio tidy clean
 
 all: build
 
@@ -24,6 +24,13 @@ vet:
 
 fmt:
 	gofmt -l -w .
+
+cover:
+	go test -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out | tail -1
+
+cover-html: cover
+	go tool cover -html=coverage.out
 
 check: build
 	./$(BIN) check -c $(CONFIG)

@@ -199,11 +199,18 @@ func validateOperation(upstream string, op Operation, toolOwners map[string]stri
 	}
 
 	declared := make(map[string]Param, len(op.Params))
+	declaredHeader := make(map[string]bool, len(op.Params))
 	pathParams := make(map[string]bool)
 	bodyParams := 0
 	for _, p := range op.Params {
-		if !paramNameRe.MatchString(p.Name) {
-			return fmt.Errorf("%s: param %q must match %s", where, p.Name, paramNameRe)
+		nameRe := paramNameRe
+		if p.In == ParamInHeader {
+			// Header names use the HTTP token grammar because hyphens are the
+			// norm there, while path placeholders stay identifier shaped.
+			nameRe = headerNameRe
+		}
+		if !nameRe.MatchString(p.Name) {
+			return fmt.Errorf("%s: param %q must match %s", where, p.Name, nameRe)
 		}
 		if _, dup := declared[p.Name]; dup {
 			return fmt.Errorf("%s: param %q declared twice", where, p.Name)
@@ -214,9 +221,11 @@ func validateOperation(upstream string, op Operation, toolOwners map[string]stri
 			pathParams[p.Name] = true
 		case ParamInQuery:
 		case ParamInHeader:
-			if !headerNameRe.MatchString(p.Name) {
-				return fmt.Errorf("%s: header param %q is not a valid header name", where, p.Name)
+			key := strings.ToLower(p.Name)
+			if declaredHeader[key] {
+				return fmt.Errorf("%s: header param %q is declared twice", where, p.Name)
 			}
+			declaredHeader[key] = true
 		case ParamInBody:
 			bodyParams++
 		default:

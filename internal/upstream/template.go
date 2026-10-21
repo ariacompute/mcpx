@@ -149,7 +149,8 @@ func MatchPrefix(path string, prefixes []string) bool {
 	for _, prefix := range prefixes {
 		base := strings.TrimSuffix(prefix, "/")
 		if base == "" {
-			base = "/"
+			// "/" is the whole upstream, so every path is inside it.
+			return true
 		}
 		if decoded == base || strings.HasPrefix(decoded, base+"/") {
 			return true

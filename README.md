@@ -104,8 +104,9 @@ upstreams:
 
 - `path`：按 `{name}` 替换，值经 `url.PathEscape`；值本身是 `.`/`..` 时拒绝。
 - `query`：数组值展开为重复参数；数字/布尔按字面量渲染（`2` 而不是 `2.000000`）。
-- `header`：参数名就是头名；`Authorization`、`Cookie`、`Host`、`Content-Length` 等保留头
-  一律拒绝，避免调用方绕过配置里的凭据。
+- `header`：参数名就是头名（允许 `X-Trace` 这类连字符写法，大小写不敏感去重）；
+  `Authorization`、`Cookie`、`Host`、`Content-Length` 等保留头一律拒绝，避免调用方
+  绕过配置里的凭据。
 - `body`：字符串原样发送（`text/plain`），其它类型 JSON 序列化（`application/json`）；
   未声明 `schema.type` 的 body 参数接受任意 JSON 值。
 - 未声明的参数、缺失的必填参数、类型不匹配、枚举越界都会返回 `isError: true` 的结果，
@@ -183,10 +184,17 @@ stdout 是协议通道，所有日志走 stderr；读到 EOF 即正常退出。
 make build      # bin/mcpx（-ldflags 注入 version/commit/date）
 make test       # go test -race ./...
 make vet        # go vet ./...
+make cover      # 全仓覆盖率汇总（coverage.out，已 gitignore）
+make cover-html # 生成并在浏览器里看 HTML 报告
 make check      # 用仓库里的示例配置做一次体检
 make run        # 前台运行 HTTP
 make stdio      # 前台运行 stdio
 ```
+
+测试全离线（`httptest` + `io.Pipe`），`go test -race ./...` 全绿；当前语句覆盖率约
+92%（`config` / `mcp` / `tool` / `upstream` / 两个 transport 均在 90% 上下，CLI 与
+端到端另有覆盖）。新增行为请同时补正常与异常路径用例 —— 尤其是路径穿越、前缀越界、
+凭据缺失和超时这几类，它们一旦回归就是安全问题。
 
 目录：
 

@@ -225,3 +225,73 @@ func TestUnknownPath(t *testing.T) {
 		t.Fatalf("status = %d, want 404", recorder.Code)
 	}
 }
+
+func TestNewAppliesDefaults(t *testing.T) {
+	registry, err := tool.NewRegistry(echoTool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(Options{Server: &mcp.Server{Tools: registry, Caller: echoCaller{}}})
+	recorder := do(t, handler, http.MethodPost, "/mcp",
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestDeleteSessionErrors(t *testing.T) {
+	handler := newHandler(t, "", nil, 1<<20)
+	if recorder := do(t, handler, http.MethodDelete, "/mcp", "", nil); recorder.Code != http.StatusBadRequest {
+		t.Fatalf("missing session status = %d, want 400", recorder.Code)
+	}
+	if recorder := do(t, handler, http.MethodDelete, "/mcp", "", map[string]string{"Mcp-Session-Id": "unknown"}); recorder.Code != http.StatusNotFound {
+		t.Fatalf("unknown session status = %d, want 404", recorder.Code)
+	}
+}
+
+func TestInitializeWithUnknownSession(t *testing.T) {
+	handler := newHandler(t, "", nil, 1<<20)
+	recorder := do(t, handler, http.MethodPost, "/mcp",
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`,
+		map[string]string{"Mcp-Session-Id": "stale"})
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", recorder.Code)
+	}
+}
+
+func TestOriginWildcard(t *testing.T) {
+	handler := newHandler(t, "", []string{"*"}, 1<<20)
+	recorder := do(t, handler, http.MethodPost, "/mcp",
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`,
+		map[string]string{"Origin": "https://anything.example"})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+}
+
+func TestMalformedContentType(t *testing.T) {
+	handler := newHandler(t, "", nil, 1<<20)
+	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{}`))
+	request.Header.Set("Content-Type", "application/json; charset")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status = %d, want 415", recorder.Code)
+	}
+}
+
+func TestHealthzWithoutRegistry(t *testing.T) {
+	handler := New(Options{Server: &mcp.Server{}, Logger: slog.New(slog.NewTextHandler(discard{}, nil))})
+	recorder := do(t, handler, http.MethodGet, "/healthz", "", nil)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"tools":0`) {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestGetAdvertisesAllowedMethods(t *testing.T) {
+	handler := newHandler(t, "", nil, 1<<20)
+	recorder := do(t, handler, http.MethodGet, "/mcp", "", nil)
+	if allow := recorder.Header().Get("Allow"); !strings.Contains(allow, http.MethodPost) {
+		t.Fatalf("Allow = %q", allow)
+	}
+}

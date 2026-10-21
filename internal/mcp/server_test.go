@@ -3,6 +3,10 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"mcpx/internal/tool"
@@ -51,6 +55,7 @@ func newTestServer(t *testing.T, pageSize int, names ...string) (*Server, *stubC
 		Tools:     registry,
 		Caller:    caller,
 		PageSize:  pageSize,
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}, caller
 }
 
@@ -220,6 +225,80 @@ func TestMissingRegistryIsAnInternalError(t *testing.T) {
 	response = exchange(t, server, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"x"}}`)
 	if code := errorCode(t, response); code != CodeInternalError {
 		t.Fatalf("code = %d, want %d", code, CodeInternalError)
+	}
+}
+
+func TestErrorString(t *testing.T) {
+	err := newError(CodeParseError, "parse error")
+	if !strings.Contains(err.Error(), "-32700") || !strings.Contains(err.Error(), "parse error") {
+		t.Fatalf("Error() = %q", err.Error())
+	}
+}
+
+func TestServerDefaults(t *testing.T) {
+	registry, err := tool.NewRegistry(stubTool{"a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Tools: registry, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	response := exchange(t, server, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"unknown"}}`)
+	result := response["result"].(map[string]any)
+	if result["protocolVersion"] != DefaultProtocolVersions[0] {
+		t.Errorf("version = %v", result["protocolVersion"])
+	}
+	info := result["serverInfo"].(map[string]any)
+	if info["name"] != "mcpx" || info["version"] != "dev" {
+		t.Errorf("serverInfo = %v", info)
+	}
+}
+
+func TestInvalidParamsShapes(t *testing.T) {
+	server, _ := newTestServer(t, 0, "a")
+
+	cases := []string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":"nope"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":"nope"}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call"}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":"nope"}`,
+		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"  "}}`,
+	}
+	for _, message := range cases {
+		response := exchange(t, server, message)
+		if code := errorCode(t, response); code != CodeInvalidParams {
+			t.Errorf("%s: code = %d, want %d", message, code, CodeInvalidParams)
+		}
+	}
+}
+
+func TestCallerFailureIsInternalError(t *testing.T) {
+	server, caller := newTestServer(t, 0, "a")
+	caller.err = errors.New("boom: upstream stack trace")
+
+	response := exchange(t, server, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"a"}}`)
+	if code := errorCode(t, response); code != CodeInternalError {
+		t.Fatalf("code = %d, want %d", code, CodeInternalError)
+	}
+	raw, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "stack trace") {
+		t.Fatal("an internal failure must not leak its detail to the client")
+	}
+}
+
+func TestToolsCallWithoutArguments(t *testing.T) {
+	server, caller := newTestServer(t, 0, "a")
+	response := exchange(t, server, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"a"}}`)
+	if response["result"] == nil {
+		t.Fatalf("response = %v", response)
+	}
+	if caller.called != "a" {
+		t.Fatalf("caller saw %q", caller.called)
+	}
+	if caller.args != nil {
+		t.Fatalf("arguments = %v, want nil", caller.args)
 	}
 }
 
