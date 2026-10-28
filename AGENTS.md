@@ -9,7 +9,7 @@
 提供 **Streamable HTTP** 与 **stdio** 两种 MCP 出口。形态参照 nginx（upstream、前缀白名单、
 超时与限长），但不依赖 nginx，也不做反代以外的协议转换。
 
-- 语言/运行时：Go 1.27，标准库 `net/http`，**唯一第三方依赖** `gopkg.in/yaml.v3`
+- 语言/运行时：Go 1.27.3，标准库 `net/http`，**唯一第三方依赖** `gopkg.in/yaml.v3`
   （同一解析器同时读 YAML 与 JSON）。
 - 无数据库、无前端、无持久化、无框架；单二进制，启动即编译配置。
 - 与本机其它仓库（`serve` / `agenthub`）**无 import 关系**，是独立项目。

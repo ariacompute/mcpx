@@ -39,7 +39,7 @@
 # ---------------------------------------------------------------------------
 
 # ---------- build ----------
-FROM golang:1.27-alpine AS build
+FROM golang:1.27.3-alpine AS build
 
 ARG BUILD_PROXY=
 ARG GOPROXY=https://goproxy.cn,direct

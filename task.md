@@ -222,6 +222,26 @@
 - 示例服务刻意不做持久化与并发压力，也不实现 OPTIONS/CORS：它演示的是「mcpx 发出什么
   请求、收到什么状态码就映射成 `isError`」，不是一份生产级 REST 服务。
 
+## 阶段 11 — eMudhra / emSign 证书私钥泄露响应（2026-10）
+
+背景：eMudhra(emSign) 8 张中间 CA 私钥极弱（P-384 私钥标量 <256），可被反推伪造任意域名证书；
+Go 等自带信任库需升级。mcpx 作为网关会向上游（Streamable HTTP）发起出向 TLS，受信任库直接影响。
+站点证书（部署用 Let's Encrypt）不受影响，无需重签。
+
+### 1. Go 后端
+- `go.mod`：`go 1.27` → `go 1.27.3`（强制构建工具链携带 `crypto/x509` 对 8 张 emSign 中间证书的硬编码封禁）。
+- `Dockerfile`：构建镜像 `golang:1.27-alpine` → `golang:1.27.3-alpine`；运行时 `alpine:3.21` 已自带 `ca-certificates`（出向 TLS 依赖，更新后移除 emSign 链）。
+
+### 2. 其它运行时说明
+- mcpx 为纯 Go 网关，**无前端 / 无 Node / 无 Bun / 无 Rust**；`example/` 下的 Python 脚本仅作示例，
+  运行在用户本机，依赖其自身信任库（已建议更新主机 `ca-certificates`），不在仓库构建/运行时信任库范围内。
+- `docker-compose.yml` 仅引用 `mcpx` 镜像与 `hashicorp/http-echo` 演示上游，无 bun/node 镜像。
+
+### 3. 检测与验证
+- 新增 `scripts/check-emudhra.sh`：离线按 emSign 根（信任锚）指纹扫描 CA bundle，规避前向/拦截
+  代理造成的在线探测假阳性。
+- 构建后核验：`docker run --rm <mcpx-image> scripts/check-emudhra.sh /etc/ssl/certs/ca-certificates.crt`。
+
 ## 后续待办
 
 - [ ] 可选指标端点（`/metrics`）与请求耗时直方图；继续保持零第三方依赖需自实现。
