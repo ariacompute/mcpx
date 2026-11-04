@@ -10,6 +10,16 @@ import (
 	"mcpx/internal/upstream"
 )
 
+// The constructors are seams: validation runs first, so a failure here means
+// the validator and a constructor disagree. Tests replace them to prove the
+// error is surfaced instead of a half-built gateway.
+var (
+	newClient      = upstream.NewClient
+	newOperation   = upstream.NewOperation
+	newPassthrough = upstream.NewPassthrough
+	newRegistry    = tool.NewRegistry
+)
+
 // Gateway owns the immutable tool set built from one config.
 type Gateway struct {
 	registry *tool.Registry
@@ -30,7 +40,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Gateway, error) {
 	tools := make([]tool.Tool, 0, len(cfg.Upstreams))
 	for i := range cfg.Upstreams {
 		u := &cfg.Upstreams[i]
-		client, err := upstream.NewClient(upstream.ClientOptions{
+		client, err := newClient(upstream.ClientOptions{
 			Name:             u.Name,
 			BaseURL:          u.BaseURL,
 			Headers:          u.Headers,
@@ -43,14 +53,14 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Gateway, error) {
 			return nil, err
 		}
 		for _, op := range u.Operations {
-			operation, err := upstream.NewOperation(client, op)
+			operation, err := newOperation(client, op)
 			if err != nil {
 				return nil, err
 			}
 			tools = append(tools, operation)
 		}
 		if u.Passthrough != nil && u.Passthrough.Enabled {
-			passthrough, err := upstream.NewPassthrough(client, *u.Passthrough)
+			passthrough, err := newPassthrough(client, *u.Passthrough)
 			if err != nil {
 				return nil, err
 			}
@@ -58,7 +68,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Gateway, error) {
 		}
 	}
 
-	registry, err := tool.NewRegistry(tools...)
+	registry, err := newRegistry(tools...)
 	if err != nil {
 		return nil, err
 	}

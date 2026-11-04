@@ -80,10 +80,7 @@ func loop(ctx context.Context, in io.Reader, out io.Writer, server *mcp.Server, 
 		if response == nil {
 			continue
 		}
-		if _, err := writer.Write(response); err != nil {
-			return err
-		}
-		if err := writer.WriteByte('\n'); err != nil {
+		if _, err := writer.Write(append(response, '\n')); err != nil {
 			return err
 		}
 		if err := writer.Flush(); err != nil {

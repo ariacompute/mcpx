@@ -11,7 +11,7 @@ LDFLAGS := -X mcpx/internal/version.Version=$(VERSION) \
            -X mcpx/internal/version.Commit=$(COMMIT) \
            -X mcpx/internal/version.Date=$(DATE)
 
-.PHONY: all build test vet fmt cover cover-html check run stdio tidy clean \
+.PHONY: all build test vet fmt cover cover-check cover-html check run stdio tidy clean \
         example-test example-test-http example-test-stdio \
         docker-build compose-config compose-up compose-down
 
@@ -30,8 +30,17 @@ fmt:
 	gofmt -l -w .
 
 cover:
-	go test -coverprofile=coverage.out ./...
+	go test -count=1 -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out | tail -1
+
+# The repository policy is total statement coverage of 100%. Anything below it
+# fails the build; the number is printed so a regression says what it is.
+cover-check: cover
+	@total=$$(go tool cover -func=coverage.out | awk '/^total:/ {print $$3}'); \
+	if [ "$$total" != "100.0%" ]; then \
+	  echo "coverage $$total, want 100.0%" >&2; \
+	  exit 1; \
+	fi
 
 cover-html: cover
 	go tool cover -html=coverage.out

@@ -112,6 +112,7 @@ make test       # go test -race ./...
 make vet        # go vet ./...
 make fmt        # gofmt -l -w .
 make cover      # 覆盖率汇总（coverage.out 已 gitignore）
+make cover-check # 语句覆盖率不足 100% 时失败（CI 门禁）
 make cover-html # HTML 覆盖率报告
 make check      # 用 mcpx.yaml 做配置体检并列出工具
 make run        # 前台跑 HTTP
@@ -129,14 +130,17 @@ make tidy       # go mod tidy
 ## 测试要求
 
 - 全离线：上游用 `httptest.Server`，stdio 用 `io.Pipe` / `strings.Reader`；禁止真实网络。
-- 116 个测试函数，全仓语句覆盖率 **91.8%**（`config 95.7 / upstream 90.4 / tool 94.5 /
-  mcp 94.8 / gateway 89.2 / httpsrv 90.0 / stdio 90.4 / cmd 83.6 / version 100`）。
+- 165 个测试函数，全仓语句覆盖率 **100%**（所有包均为 100%），由 `make cover-check` 与
+  `.github/workflows/ci.yml` 强制；覆盖率下降即视为回归。
 - 新增行为必须同时覆盖正常与异常路径；安全类必须覆盖：路径穿越、前缀越界、凭据缺失、
   超时、跨源重定向、保留头注入。
-- 存在少量**防御性不可达分支**（如 `gateway.Call` 的通用 error 分支、`Validate` 里被
-  `ApplyDefaults` 兜住的零值检查）。它们靠直接构造对象覆盖，不要为了数字写无意义用例。
-- 改动行为时同步三件套：`README.md`（人读手册）、`requirements.md`（契约）、
-  `task.md`（实施记录）；只改代码不改文档视为未完成。
+- **不可达防御分支用包内私有 seam 覆盖**（默认值即标准库调用，测试串行替换并
+  `t.Cleanup` 还原），例如 `httpsrv.randomRead` / `httpsrv.marshalJSON` /
+  `gateway.newClient` 等构造器 / `upstream.newRequest` / CLI 的 exit、signal、listen、
+  shutdown、stdioRun。若分支可证明恒假（由构造方式决定），删除而不是硬测，并写清论证。
+  不使用 `t.Parallel` 与 seam 混用。
+- 改动行为时同步五件套：`README.md`、`README_cn.md`（人读手册）、`requirements.md`
+  （契约）、`task.md`（实施记录）、`AGENTS.md`（本文件）；只改代码不改文档视为未完成。
 
 ## 注意事项
 
@@ -179,4 +183,5 @@ make tidy       # go mod tidy
 | v1.1 | header 参数允许连字符（大小写不敏感去重）、`/` 前缀覆盖全部路径、覆盖率提升到 91.8%、新增 `make cover` | 已实现 |
 | v1.2 | 容器化：多阶段 Dockerfile、compose（网关 + 演示上游）、`deploy/mcpx.docker.yaml`、`make docker-build/compose-*`、发布工作流（release 触发 → 校验 → DockerHub 双架构镜像 + 三平台二进制与 SHA256SUMS） | 已实现 |
 | v1.3 | Python 接入示例（notes 上游 + Streamable HTTP 客户端 + stdio 客户端 + 共享配置）与 `scripts/` 一键测试（`make example-test-http/stdio/test`） | 已实现 |
+| v1.4 | 覆盖率 91.8% → **100%**（165 个测试函数、包内私有 seam、删除恒假分支）；新增 `make cover-check` 与 `.github/workflows/ci.yml`（gofmt / vet / build / `test -race` / 覆盖率门禁 / coverage artifact） | 已实现 |
 | 后续 | 可选指标端点、上游重试与熔断 | 未开始 |

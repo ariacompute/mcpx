@@ -11,6 +11,7 @@ import (
 
 	"mcpx/internal/config"
 	"mcpx/internal/tool"
+	"mcpx/internal/upstream"
 )
 
 func discardLogger() *slog.Logger {
@@ -149,6 +150,67 @@ func TestBuildUsesTheDefaultLogger(t *testing.T) {
 
 	if _, err := Build(testConfig("https://example.com"), nil); err != nil {
 		t.Fatalf("Build with a nil logger: %v", err)
+	}
+}
+
+func TestBuildPropagatesConstructorFailures(t *testing.T) {
+	boom := errors.New("constructor refused")
+	cfg := testConfig("https://example.com")
+
+	t.Run("client", func(t *testing.T) {
+		previous := newClient
+		t.Cleanup(func() { newClient = previous })
+		newClient = func(upstream.ClientOptions) (*upstream.Client, error) { return nil, boom }
+		if _, err := Build(cfg, discardLogger()); !errors.Is(err, boom) {
+			t.Fatalf("err = %v, want the client error", err)
+		}
+	})
+
+	t.Run("operation", func(t *testing.T) {
+		previous := newOperation
+		t.Cleanup(func() { newOperation = previous })
+		newOperation = func(*upstream.Client, config.Operation) (*upstream.Operation, error) { return nil, boom }
+		if _, err := Build(cfg, discardLogger()); !errors.Is(err, boom) {
+			t.Fatalf("err = %v, want the operation error", err)
+		}
+	})
+
+	t.Run("passthrough", func(t *testing.T) {
+		previous := newPassthrough
+		t.Cleanup(func() { newPassthrough = previous })
+		newPassthrough = func(*upstream.Client, config.Passthrough) (*upstream.Passthrough, error) { return nil, boom }
+		if _, err := Build(cfg, discardLogger()); !errors.Is(err, boom) {
+			t.Fatalf("err = %v, want the passthrough error", err)
+		}
+	})
+
+	t.Run("registry", func(t *testing.T) {
+		previous := newRegistry
+		t.Cleanup(func() { newRegistry = previous })
+		newRegistry = func(...tool.Tool) (*tool.Registry, error) { return nil, boom }
+		if _, err := Build(cfg, discardLogger()); !errors.Is(err, boom) {
+			t.Fatalf("err = %v, want the registry error", err)
+		}
+	})
+}
+
+func TestBuildRejectsDuplicatePlaceholder(t *testing.T) {
+	cfg := &config.Config{
+		Upstreams: []config.Upstream{{
+			Name:    "demo",
+			BaseURL: "https://example.com",
+			Operations: []config.Operation{{
+				Name:   "get",
+				Method: "GET",
+				Path:   "/things/{id}/{id}",
+				Params: []config.Param{{Name: "id", In: config.ParamInPath}},
+			}},
+		}},
+	}
+	// The validator accepts the duplicate placeholder; the template compiler is
+	// the layer that refuses it, so Build must surface that error.
+	if _, err := Build(cfg, discardLogger()); err == nil {
+		t.Fatal("expected the template compiler to reject a repeated placeholder")
 	}
 }
 

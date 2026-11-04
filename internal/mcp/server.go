@@ -14,6 +14,10 @@ import (
 // one; the config package normally supplies the same list.
 var DefaultProtocolVersions = []string{"2025-06-18", "2025-03-26"}
 
+// fallbackProtocolVersion answers a client when every supported list is empty.
+// It is a constant so the handshake never indexes an empty slice.
+const fallbackProtocolVersion = "2025-06-18"
+
 // Caller executes a tool by name. The gateway implements it; keeping it an
 // interface means the protocol layer has no dependency on HTTP.
 type Caller interface {
@@ -112,7 +116,7 @@ func (s *Server) negotiate(requested string) string {
 		}
 	}
 	if len(supported) == 0 {
-		return DefaultProtocolVersions[0]
+		return fallbackProtocolVersion
 	}
 	return supported[0]
 }

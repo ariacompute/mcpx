@@ -25,6 +25,10 @@ import (
 // MaxRedirects bounds a chain: a gateway is not a browser.
 const MaxRedirects = 3
 
+// newRequest is a seam: the method and URL are validated above, so the only
+// way to reach the constructor's error arm is to replace it.
+var newRequest = http.NewRequestWithContext
+
 // Client is one configured upstream. It is immutable after construction and
 // safe for concurrent use.
 type Client struct {
@@ -170,7 +174,7 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	if len(req.Body) > 0 {
 		body = bytes.NewReader(req.Body)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, method, target.String(), body)
+	httpReq, err := newRequest(ctx, method, target.String(), body)
 	if err != nil {
 		return nil, fmt.Errorf("upstream %s: build request: %w", c.name, err)
 	}
@@ -254,17 +258,15 @@ func (c *Client) resolve(path string, query url.Values) (*url.URL, error) {
 	if c.basePath != "" && plain != c.basePath && !strings.HasPrefix(plain, c.basePath+"/") {
 		return nil, fmt.Errorf("%w: %q escapes the base path", ErrPathNotAllowed, plain)
 	}
-	target := &url.URL{
+	// The scheme and host come from the configured base, so the target cannot
+	// leave the origin; the allowlist check above is what bounds the path.
+	return &url.URL{
 		Scheme:   c.base.Scheme,
 		Host:     c.base.Host,
 		Path:     plain,
 		RawPath:  full,
 		RawQuery: query.Encode(),
-	}
-	if target.Scheme != c.base.Scheme || !strings.EqualFold(target.Host, c.base.Host) {
-		return nil, fmt.Errorf("%w: %q leaves the configured origin", ErrPathNotAllowed, path)
-	}
-	return target, nil
+	}, nil
 }
 
 // applyAuth injects the configured credential. A missing environment variable

@@ -347,6 +347,174 @@ func TestValidatePath(t *testing.T) {
 	}
 }
 
+func TestSameOriginRedirectIsFollowed(t *testing.T) {
+	var finalPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		finalPath = r.URL.Path
+		_, _ = io.WriteString(w, "done")
+	}))
+	defer server.Close()
+
+	client := newClient(t, server.URL, nil, 1<<20, 1<<20)
+	response, err := client.Do(context.Background(), Request{Method: "GET", Path: "/start"})
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if response.StatusCode != http.StatusOK || finalPath != "/final" {
+		t.Fatalf("status = %d final path = %q", response.StatusCode, finalPath)
+	}
+}
+
+func TestRedirectLoopIsBounded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/loop", http.StatusFound)
+	}))
+	defer server.Close()
+
+	client := newClient(t, server.URL, nil, 1<<20, 1<<20)
+	_, err := client.Do(context.Background(), Request{Method: "GET", Path: "/loop"})
+	if err == nil || !strings.Contains(err.Error(), "too many redirects") {
+		t.Fatalf("err = %v, want the redirect limit", err)
+	}
+}
+
+func TestConfiguredHeadersAreSent(t *testing.T) {
+	var static string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		static = r.Header.Get("X-Static")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientOptions{
+		Name:    "demo",
+		BaseURL: server.URL,
+		Headers: map[string]string{"X-Static": "configured"},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := client.Do(context.Background(), Request{Method: "GET", Path: "/x"}); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if static != "configured" {
+		t.Fatalf("X-Static = %q", static)
+	}
+}
+
+func TestRequestBodyContentTypes(t *testing.T) {
+	var contentType string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contentType = r.Header.Get("Content-Type")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer server.Close()
+	client := newClient(t, server.URL, nil, 1<<20, 1<<20)
+
+	cases := []struct {
+		name    string
+		request Request
+		want    string
+	}{
+		{
+			name:    "explicit",
+			request: Request{Method: "POST", Path: "/x", Body: []byte("x"), ContentType: "text/csv"},
+			want:    "text/csv",
+		},
+		{
+			name:    "header hint",
+			request: Request{Method: "POST", Path: "/x", Body: []byte("x"), Headers: http.Header{"Content-Type": {"text/plain"}}},
+			want:    "text/plain",
+		},
+		{
+			name:    "default",
+			request: Request{Method: "POST", Path: "/x", Body: []byte("x")},
+			want:    "application/json",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			contentType = ""
+			if _, err := client.Do(context.Background(), testCase.request); err != nil {
+				t.Fatalf("Do: %v", err)
+			}
+			if contentType != testCase.want {
+				t.Fatalf("Content-Type = %q, want %q", contentType, testCase.want)
+			}
+		})
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
+
+type errorReader struct{ err error }
+
+func (e errorReader) Read([]byte) (int, error) { return 0, e.err }
+
+func TestResponseBodyReadFailure(t *testing.T) {
+	client := newClient(t, "https://example.com", nil, 1<<20, 1<<20)
+	client.http.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{},
+			Body:       io.NopCloser(errorReader{err: errors.New("connection cut")}),
+		}, nil
+	})
+	_, err := client.Do(context.Background(), Request{Method: "GET", Path: "/x"})
+	if !errors.Is(err, ErrUnreachable) || !strings.Contains(err.Error(), "reading body failed") {
+		t.Fatalf("err = %v, want a body-read failure", err)
+	}
+}
+
+func TestBasePathEscapesAreRejected(t *testing.T) {
+	// %25 decodes to a literal %, so the base path contains an escape sequence
+	// the gateway did not produce itself.
+	escaped, err := NewClient(ClientOptions{Name: "demo", BaseURL: "http://example.com/a%252Fb"})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := escaped.Do(context.Background(), Request{Method: "GET", Path: "/x"}); !errors.Is(err, ErrPathNotAllowed) || !strings.Contains(err.Error(), "escapes the base path") {
+		t.Fatalf("err = %v, want a base-path escape error", err)
+	}
+
+	invalid, err := NewClient(ClientOptions{Name: "demo", BaseURL: "http://example.com/a%25zz"})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := invalid.Do(context.Background(), Request{Method: "GET", Path: "/x"}); !errors.Is(err, ErrPathNotAllowed) || !strings.Contains(err.Error(), "not a valid path") {
+		t.Fatalf("err = %v, want an invalid-path error", err)
+	}
+}
+
+func TestHeaderAuthWithoutTokenEnv(t *testing.T) {
+	client := newClient(t, "http://127.0.0.1:1", &config.Auth{Scheme: config.SchemeHeader, HeaderName: "X-Key"}, 1<<20, 1<<20)
+	_, err := client.Do(context.Background(), Request{Method: "GET", Path: "/x"})
+	if !errors.Is(err, ErrCredentialsMissing) {
+		t.Fatalf("err = %v, want ErrCredentialsMissing", err)
+	}
+}
+
+func TestRequestConstructorFailure(t *testing.T) {
+	previous := newRequest
+	t.Cleanup(func() { newRequest = previous })
+	newRequest = func(context.Context, string, string, io.Reader) (*http.Request, error) {
+		return nil, errors.New("cannot build")
+	}
+
+	client := newClient(t, "https://example.com", nil, 1<<20, 1<<20)
+	_, err := client.Do(context.Background(), Request{Method: "GET", Path: "/x"})
+	if err == nil || !strings.Contains(err.Error(), "build request") {
+		t.Fatalf("err = %v, want the constructor failure", err)
+	}
+}
+
 func TestMatchPrefix(t *testing.T) {
 	cases := map[string]bool{
 		"/api/v1":        true,

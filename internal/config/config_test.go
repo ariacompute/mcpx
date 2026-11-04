@@ -172,6 +172,68 @@ func TestLoadMissingFile(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsMalformedDocument(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bad.yaml")
+	if err := os.WriteFile(path, []byte("upstreams: ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected a decode error for a malformed file")
+	}
+}
+
+func TestDecodeDefaultsEmptyAuthAndParamLocation(t *testing.T) {
+	cfg := mustDecode(t, `
+server:
+  auth: {}
+upstreams:
+  - name: demo
+    base_url: https://example.com
+    auth: {}
+    operations:
+      - name: ping
+        path: /ping
+        params:
+          - name: q
+`)
+	if cfg.Server.Auth == nil || cfg.Server.Auth.Scheme != SchemeNone {
+		t.Fatalf("server auth = %+v, want scheme none", cfg.Server.Auth)
+	}
+	upstream := cfg.FindUpstream("demo")
+	if upstream == nil || upstream.Auth == nil || upstream.Auth.Scheme != SchemeNone {
+		t.Fatalf("upstream auth = %+v, want scheme none", upstream)
+	}
+	if got := upstream.Operations[0].Params[0].In; got != ParamInQuery {
+		t.Fatalf("param in = %q, want query", got)
+	}
+}
+
+func TestValidateRejectsPassthroughWithoutMethods(t *testing.T) {
+	cfg := &Config{
+		Server: Server{Listen: "127.0.0.1:1", Path: "/mcp", MaxRequestBytes: 1, SessionTTL: Duration(time.Second)},
+		Defaults: Defaults{
+			Timeout:          Duration(time.Second),
+			MaxResponseBytes: 1,
+			MaxBodyBytes:     1,
+		},
+		Upstreams: []Upstream{{
+			Name:             "demo",
+			BaseURL:          "https://example.com",
+			Timeout:          Duration(time.Second),
+			MaxResponseBytes: 1,
+			Passthrough: &Passthrough{
+				Enabled:       true,
+				Name:          "request",
+				AllowPrefixes: []string{"/api"},
+			},
+		}},
+	}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "methods must not be empty") {
+		t.Fatalf("err = %v, want a missing-methods error", err)
+	}
+}
+
 func TestApplyDefaultsIsIdempotent(t *testing.T) {
 	once := mustDecode(t, sampleYAML)
 	twice := mustDecode(t, sampleYAML)
@@ -760,6 +822,100 @@ upstreams:
     operations: [{name: ping, path: /ping}]
 `,
 			want: "must be a plain path",
+		},
+		{
+			name: "server bearer without token_env",
+			document: `
+server:
+  auth:
+    scheme: bearer
+upstreams:
+  - name: demo
+    base_url: https://example.com
+    operations: [{name: ping, path: /ping}]
+`,
+			want: "token_env is required",
+		},
+		{
+			name: "unparsable base url",
+			document: `
+upstreams:
+  - name: demo
+    base_url: "http://[::1"
+    operations: [{name: ping, path: /ping}]
+`,
+			want: "base_url",
+		},
+		{
+			name: "base url without a host",
+			document: `
+upstreams:
+  - name: demo
+    base_url: "http:///path"
+    operations: [{name: ping, path: /ping}]
+`,
+			want: "must include a host",
+		},
+		{
+			name: "bad operation name",
+			document: `
+upstreams:
+  - name: demo
+    base_url: https://example.com
+    operations: [{name: "1bad", path: /ping}]
+`,
+			want: "name must match",
+		},
+		{
+			name: "bad operation header name",
+			document: `
+upstreams:
+  - name: demo
+    base_url: https://example.com
+    operations:
+      - name: ping
+        path: /ping
+        headers:
+          "Bad Name": value
+`,
+			want: "not a valid header name",
+		},
+		{
+			name: "bad upstream prefix",
+			document: `
+upstreams:
+  - name: demo
+    base_url: https://example.com
+    allow_prefixes: ["/a b"]
+    operations: [{name: ping, path: /ping}]
+`,
+			want: "must not contain a query, fragment or whitespace",
+		},
+		{
+			name: "bad passthrough prefix",
+			document: `
+upstreams:
+  - name: demo
+    base_url: https://example.com
+    operations: [{name: ping, path: /ping}]
+    passthrough:
+      enabled: true
+      methods: [get]
+      allow_prefixes: ["/a b"]
+`,
+			want: "passthrough path",
+		},
+		{
+			name: "unparsable allowed origin",
+			document: `
+server:
+  allowed_origins: ["http://[::1"]
+upstreams:
+  - name: demo
+    base_url: https://example.com
+    operations: [{name: ping, path: /ping}]
+`,
+			want: "server.allowed_origins",
 		},
 	}
 

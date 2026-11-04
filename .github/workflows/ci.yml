@@ -1,0 +1,77 @@
+name: CI
+
+# Pull-request and main-branch gate. It runs the same checks `release.yml`
+# requires before publishing, plus the 100% statement-coverage gate:
+#
+#   gofmt -l .            every file must be formatted
+#   go vet ./...          static checks
+#   go build ./...        the module must compile as a whole
+#   go test -race ./...   the suite must pass under the race detector
+#   make cover-check      total statement coverage must be 100%
+#
+# Docker, compose and `make example-test*` stay out: they need an image build,
+# published ports and a Python runtime, which belong to the release smoke and
+# to a developer machine. No secrets are used here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch supersedes the run it replaced.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Direct internet on a runner; the Dockerfile's goproxy.cn default is for
+  # developer machines behind the GFW.
+  GOPROXY: https://proxy.golang.org,direct
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          # go.mod pins the patched toolchain (1.27.3); do not drift from it.
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt-ed:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test (race)
+        run: go test -race ./...
+
+      - name: coverage gate (100%)
+        run: make cover-check
+
+      - name: Upload coverage profile
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+          if-no-files-found: ignore

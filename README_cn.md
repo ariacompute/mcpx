@@ -284,17 +284,13 @@ make build         # bin/mcpx（-ldflags 注入 version/commit/date）
 make test          # go test -race ./...
 make vet           # go vet ./...
 make cover         # 全仓覆盖率汇总（coverage.out，已 gitignore）
+make cover-check   # 语句覆盖率不足 100% 时失败
 make cover-html    # 生成并在浏览器里看 HTML 报告
 make check         # 用仓库里的示例配置做一次体检，并列出工具
 make run           # 前台运行 HTTP
 make stdio         # 前台运行 stdio
 make example-test  # example/ 两种传输的端到端测试（见「示例」）
 ```
-
-测试全离线（`httptest` + `io.Pipe`），`go test -race ./...` 全绿；当前语句覆盖率约
-92%（`config` / `mcp` / `tool` / `upstream` / 两个 transport 均在 90% 上下，CLI 与
-端到端另有覆盖）。新增行为请同时补正常与异常路径用例 —— 尤其是路径穿越、前缀越界、
-凭据缺失和超时这几类，它们一旦回归就是安全问题。
 
 目录：
 
@@ -310,8 +306,6 @@ tests               httptest 端到端
 example             Python notes 服务 + HTTP/stdio 两种 MCP 客户端
 scripts             example/ 的一键测试脚本（bash）
 ```
-
-唯一第三方依赖是 `gopkg.in/yaml.v3`（同时解析 YAML 与 JSON），其余全部标准库。
 
 ## 明确不做
 

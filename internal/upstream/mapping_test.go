@@ -316,6 +316,224 @@ func TestNewPassthroughValidation(t *testing.T) {
 	}
 }
 
+func TestOperationConfiguredHeadersAreSent(t *testing.T) {
+	var trace string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		trace = r.Header.Get("X-Trace")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer server.Close()
+
+	client := newClient(t, server.URL, nil, 1<<20, 1<<20)
+	operation, err := NewOperation(client, config.Operation{
+		Name:    "ping",
+		Method:  "GET",
+		Path:    "/ping",
+		Headers: map[string]string{"X-Trace": "static"},
+	})
+	if err != nil {
+		t.Fatalf("NewOperation: %v", err)
+	}
+	if _, err := operation.Invoke(context.Background(), nil); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if trace != "static" {
+		t.Fatalf("X-Trace = %q", trace)
+	}
+}
+
+// laxSchema disables argument-shape enforcement so the binding errors behind it
+// can be exercised directly. It mirrors what a caller of Invoke could construct,
+// not what tools/list publishes.
+func laxSchema() map[string]any { return map[string]any{"type": "object"} }
+
+func TestOperationBindingErrors(t *testing.T) {
+	client := newClient(t, "http://127.0.0.1:1", nil, 1<<20, 1<<20)
+	operation, err := NewOperation(client, config.Operation{
+		Name:   "get",
+		Method: "GET",
+		Path:   "/things/{id}",
+		Params: []config.Param{
+			{Name: "id", In: config.ParamInPath},
+			{Name: "q", In: config.ParamInQuery},
+			{Name: "X-Trace", In: config.ParamInHeader},
+		},
+		InputSchema: laxSchema(),
+	})
+	if err != nil {
+		t.Fatalf("NewOperation: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		args map[string]any
+	}{
+		{name: "missing path value", args: map[string]any{}},
+		{name: "non-scalar path value", args: map[string]any{"id": []any{"a"}}},
+		{name: "unexpandable path value", args: map[string]any{"id": ".."}},
+		{name: "non-scalar query value", args: map[string]any{"id": "1", "q": map[string]any{"a": 1}}},
+		{name: "non-scalar header value", args: map[string]any{"id": "1", "X-Trace": []any{"a"}}},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if _, err := operation.Invoke(context.Background(), testCase.args); !errors.Is(err, tool.ErrInvalidArguments) {
+				t.Fatalf("err = %v, want an invalid-arguments error", err)
+			}
+		})
+	}
+}
+
+func TestOperationOptionalParamAndNilHeaders(t *testing.T) {
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer server.Close()
+
+	client := newClient(t, server.URL, nil, 1<<20, 1<<20)
+	operation, err := NewOperation(client, config.Operation{
+		Name:   "get",
+		Method: "GET",
+		Path:   "/things/{id}",
+		Params: []config.Param{
+			{Name: "id", In: config.ParamInPath},
+			{Name: "q", In: config.ParamInQuery},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewOperation: %v", err)
+	}
+	// An Operation built by hand may carry no headers at all.
+	operation.headers = nil
+	if _, err := operation.Invoke(context.Background(), map[string]any{"id": "7"}); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if path != "/things/7" {
+		t.Fatalf("path = %q", path)
+	}
+}
+
+func TestOperationQueryArrays(t *testing.T) {
+	var query url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.Query()
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer server.Close()
+
+	client := newClient(t, server.URL, nil, 1<<20, 1<<20)
+	operation, err := NewOperation(client, config.Operation{
+		Name:   "search",
+		Method: "GET",
+		Path:   "/search",
+		Params: []config.Param{{Name: "tags", In: config.ParamInQuery, Schema: map[string]any{"type": "array"}}},
+	})
+	if err != nil {
+		t.Fatalf("NewOperation: %v", err)
+	}
+	if _, err := operation.Invoke(context.Background(), map[string]any{"tags": []any{"a", "b"}}); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if got := query["tags"]; len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("tags = %v", got)
+	}
+	if _, err := operation.Invoke(context.Background(), map[string]any{"tags": []any{map[string]any{"a": 1}}}); !errors.Is(err, tool.ErrInvalidArguments) {
+		t.Fatalf("err = %v, want an invalid-arguments error", err)
+	}
+}
+
+func TestOperationBodyEncodingFailure(t *testing.T) {
+	client := newClient(t, "http://127.0.0.1:1", nil, 1<<20, 1<<20)
+	operation, err := NewOperation(client, config.Operation{
+		Name:      "create",
+		Method:    "POST",
+		Path:      "/things",
+		BodyParam: "payload",
+		Params:    []config.Param{{Name: "payload", In: config.ParamInBody}},
+	})
+	if err != nil {
+		t.Fatalf("NewOperation: %v", err)
+	}
+	if _, err := operation.Invoke(context.Background(), map[string]any{"payload": make(chan int)}); !errors.Is(err, tool.ErrInvalidArguments) {
+		t.Fatalf("err = %v, want an invalid-arguments error", err)
+	}
+}
+
+func TestOperationUpstreamFailureIsAnErrorResult(t *testing.T) {
+	client := newClient(t, "http://127.0.0.1:1", nil, 1<<20, 1<<20)
+	operation, err := NewOperation(client, config.Operation{Name: "ping", Method: "GET", Path: "/ping"})
+	if err != nil {
+		t.Fatalf("NewOperation: %v", err)
+	}
+	result, err := operation.Invoke(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Invoke returned a protocol error: %v", err)
+	}
+	if !result.IsError || result.Text == "" {
+		t.Fatalf("result = %+v, want an isError result with the failure text", result)
+	}
+}
+
+func TestPassthroughMapperErrors(t *testing.T) {
+	client := newClient(t, "http://127.0.0.1:1", nil, 1<<20, 1<<20)
+	passthrough, err := NewPassthrough(client, config.Passthrough{
+		Enabled:       true,
+		Name:          "demo_request",
+		Methods:       []string{"GET"},
+		AllowPrefixes: []string{"/api"},
+	})
+	if err != nil {
+		t.Fatalf("NewPassthrough: %v", err)
+	}
+	if _, err := passthrough.Invoke(context.Background(), map[string]any{
+		"path":    "/api/x",
+		"headers": map[string]any{"X-List": []any{"a"}},
+	}); !errors.Is(err, tool.ErrInvalidArguments) {
+		t.Fatalf("err = %v, want an invalid-arguments error for a non-scalar header", err)
+	}
+
+	// The published schema rejects these shapes first; replacing it exercises
+	// the mapper's own guards.
+	passthrough.schema = laxSchema()
+	cases := []struct {
+		name string
+		args map[string]any
+	}{
+		{name: "method is not scalar", args: map[string]any{"path": "/api/x", "method": []any{"GET"}}},
+		{name: "method is not allowed", args: map[string]any{"path": "/api/x", "method": "POST"}},
+		{name: "query is not an object", args: map[string]any{"path": "/api/x", "query": "nope"}},
+		{name: "headers is not an object", args: map[string]any{"path": "/api/x", "headers": "nope"}},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if _, err := passthrough.Invoke(context.Background(), testCase.args); !errors.Is(err, tool.ErrInvalidArguments) {
+				t.Fatalf("err = %v, want an invalid-arguments error", err)
+			}
+		})
+	}
+}
+
+func TestPassthroughUpstreamFailureIsAnErrorResult(t *testing.T) {
+	client := newClient(t, "http://127.0.0.1:1", nil, 1<<20, 1<<20)
+	passthrough, err := NewPassthrough(client, config.Passthrough{
+		Enabled:       true,
+		Name:          "demo_request",
+		Methods:       []string{"GET"},
+		AllowPrefixes: []string{"/api"},
+	})
+	if err != nil {
+		t.Fatalf("NewPassthrough: %v", err)
+	}
+	result, err := passthrough.Invoke(context.Background(), map[string]any{"path": "/api/x"})
+	if err != nil {
+		t.Fatalf("Invoke returned a protocol error: %v", err)
+	}
+	if !result.IsError || result.Text == "" {
+		t.Fatalf("result = %+v, want an isError result with the failure text", result)
+	}
+}
+
 func TestEncodeBody(t *testing.T) {
 	if encoded, contentType, err := encodeBody(nil, ""); err != nil || encoded != nil || contentType != "" {
 		t.Fatalf("nil = %v %q %v", encoded, contentType, err)

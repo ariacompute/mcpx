@@ -304,18 +304,13 @@ make build         # bin/mcpx (version/commit/date injected via -ldflags)
 make test          # go test -race ./...
 make vet           # go vet ./...
 make cover         # whole-repo coverage summary (coverage.out, gitignored)
+make cover-check   # fail unless total statement coverage is exactly 100%
 make cover-html    # generate and open the HTML coverage report
 make check         # validate the example config and list its tools
 make run           # run the HTTP endpoint in the foreground
 make stdio         # run the stdio transport in the foreground
 make example-test  # example/ end-to-end over both transports (see "Examples")
 ```
-
-Tests are fully offline (`httptest` + `io.Pipe`) and `go test -race ./...` is green;
-statement coverage is currently about 92% (config, mcp, tool, upstream and both transports
-sit around 90%, with the CLI and end-to-end suite covering the rest). New behaviour needs
-both success and failure cases — especially path traversal, prefix escapes, missing
-credentials and timeouts, where a regression is a security bug rather than a broken feature.
 
 Layout:
 
@@ -331,9 +326,6 @@ tests               httptest end-to-end
 example             Python notes service + MCP clients over HTTP and stdio
 scripts             one-command tests for example/ (bash)
 ```
-
-The only third-party dependency is `gopkg.in/yaml.v3` (it parses both YAML and JSON);
-everything else is the standard library.
 
 ## Explicitly out of scope
 

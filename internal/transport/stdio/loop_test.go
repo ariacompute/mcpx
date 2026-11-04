@@ -227,6 +227,83 @@ func TestNilServerIsRejected(t *testing.T) {
 	}
 }
 
+func TestLoopStopsWhenTheContextIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// Run may return through its select before the loop starts, so the loop's
+	// own cancellation check is exercised directly.
+	if err := loop(ctx, strings.NewReader(""), io.Discard, newServer(t), 1024); err != nil {
+		t.Fatalf("loop returned %v on a canceled context", err)
+	}
+}
+
+func TestNilLoggerFallsBackToTheDefault(t *testing.T) {
+	if err := Run(context.Background(), strings.NewReader(""), io.Discard, Options{Server: newServer(t)}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
+func TestNotificationsProduceNoOutput(t *testing.T) {
+	var output bytes.Buffer
+	input := `{"jsonrpc":"2.0","method":"notifications/initialized"}` + "\n"
+	if err := Run(context.Background(), strings.NewReader(input), &output, Options{
+		Server: newServer(t),
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("notification wrote %q", output.String())
+	}
+}
+
+// verboseTool makes tools/list larger than bufio.Writer's buffer, so the write
+// reaches the underlying writer inside Write instead of at Flush.
+type verboseTool struct{}
+
+func (verboseTool) Name() string        { return "verbose" }
+func (verboseTool) Description() string { return strings.Repeat("x", 8192) }
+func (verboseTool) InputSchema() map[string]any {
+	return map[string]any{"type": "object"}
+}
+func (verboseTool) Invoke(context.Context, map[string]any) (tool.Result, error) {
+	return tool.Result{}, nil
+}
+
+func TestWriteFailureInsideTheBufferIsReported(t *testing.T) {
+	registry, err := tool.NewRegistry(verboseTool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &mcp.Server{
+		Name:      "mcpx",
+		Protocols: []string{"2025-06-18"},
+		Tools:     registry,
+		Caller:    stubCaller{},
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	err = Run(context.Background(), strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`+"\n"),
+		failingWriter{}, Options{Server: server, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err == nil || !strings.Contains(err.Error(), "write failed") {
+		t.Fatalf("err = %v, want the write failure", err)
+	}
+}
+
+func TestLineLongerThanTheReadBufferIsAssembled(t *testing.T) {
+	var output bytes.Buffer
+	input := strings.Repeat("x", 100<<10) + "\n"
+	if err := Run(context.Background(), strings.NewReader(input), &output, Options{
+		Server:       newServer(t),
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		MaxLineBytes: 1 << 20,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(output.String(), "parse error") {
+		t.Fatalf("output = %q, want a parse error for the oversized garbage line", output.String())
+	}
+}
+
 func writeLine(t *testing.T, writer io.Writer, line string) {
 	t.Helper()
 	if _, err := io.WriteString(writer, line+"\n"); err != nil {

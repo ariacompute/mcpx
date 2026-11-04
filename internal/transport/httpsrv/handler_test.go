@@ -3,11 +3,13 @@ package httpsrv
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"mcpx/internal/mcp"
 	"mcpx/internal/tool"
@@ -285,6 +287,95 @@ func TestHealthzWithoutRegistry(t *testing.T) {
 	recorder := do(t, handler, http.MethodGet, "/healthz", "", nil)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"tools":0`) {
 		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestUnsupportedMethodIsRejected(t *testing.T) {
+	handler := newHandler(t, "", nil, 1<<20)
+	recorder := do(t, handler, http.MethodPut, "/mcp", "", nil)
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", recorder.Code)
+	}
+}
+
+type failingBodyReader struct{}
+
+func (failingBodyReader) Read([]byte) (int, error) { return 0, errors.New("body broke") }
+
+func TestBodyReadFailureIsBadRequest(t *testing.T) {
+	handler := newHandler(t, "", nil, 1<<20)
+	request := httptest.NewRequest(http.MethodPost, "/mcp", failingBodyReader{})
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+}
+
+func TestSessionCreationFailureIsInternalError(t *testing.T) {
+	previous := randomRead
+	t.Cleanup(func() { randomRead = previous })
+	randomRead = func([]byte) (int, error) { return 0, errors.New("no entropy") }
+
+	handler := newHandler(t, "", nil, 1<<20)
+	recorder := do(t, handler, http.MethodPost, "/mcp",
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`, nil)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", recorder.Code)
+	}
+}
+
+func TestEncodingFailuresFallBack(t *testing.T) {
+	previous := marshalJSON
+	t.Cleanup(func() { marshalJSON = previous })
+	marshalJSON = func(any) ([]byte, error) { return nil, errors.New("cannot encode") }
+
+	handler := newHandler(t, "", nil, 1<<20)
+	health := do(t, handler, http.MethodGet, "/healthz", "", nil)
+	if health.Code != http.StatusInternalServerError {
+		t.Fatalf("health status = %d, want 500", health.Code)
+	}
+	problem := do(t, handler, http.MethodPut, "/mcp", "", nil)
+	if problem.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("problem status = %d, want the original 405", problem.Code)
+	}
+	if body := problem.Body.String(); !strings.Contains(body, "unsupported method") {
+		t.Fatalf("problem body = %q, want the plain-text fallback", body)
+	}
+}
+
+func TestMalformedOriginIsRefused(t *testing.T) {
+	handler := newHandler(t, "", nil, 1<<20)
+	recorder := do(t, handler, http.MethodPost, "/mcp",
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`,
+		map[string]string{"Origin": "http://[::1"})
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", recorder.Code)
+	}
+}
+
+func TestSessionStoreLifecycle(t *testing.T) {
+	store := newSessionStore(time.Minute)
+	if store.Touch("") {
+		t.Fatal("an empty session id must not validate")
+	}
+
+	now := time.Unix(1000, 0)
+	store.now = func() time.Time { return now }
+	id, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if !store.Touch(id) || store.Count() != 1 {
+		t.Fatalf("a fresh session should validate and be counted")
+	}
+	now = now.Add(2 * time.Minute)
+	if store.Touch(id) {
+		t.Fatal("an expired session must not validate")
+	}
+	if store.Count() != 0 {
+		t.Fatalf("Count = %d, want the expired session evicted", store.Count())
 	}
 }
 

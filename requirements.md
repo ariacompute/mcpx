@@ -240,7 +240,11 @@ POST/PUT/PATCH/DELETE；`body_param` 必须指向 `in=body` 的参数。
 ## 7. 验收标准
 
 - [x] `go build ./...`、`go vet ./...`、`gofmt -l .` 全部干净。
-- [x] `go test -race ./...` 全绿；116 个测试函数；语句覆盖率 ≥90%（当前 91.8%）。
+- [x] `go test -race ./...` 全绿；165 个测试函数；语句覆盖率 **100%**（全包 100%，
+      `make cover-check` 门禁）。
+- [x] 持续集成：`.github/workflows/ci.yml` 在 push(main) / pull_request / 手动触发时执行
+      `gofmt` / `go vet` / `go build` / `go test -race` / `make cover-check`，并上传
+      `coverage.out`；不依赖 secrets、Docker 或示例端口。
 - [x] `mcpx check -c mcpx.yaml` 通过，并列出 5 个工具（示例配置）。
 - [x] HTTP 流程：`initialize` → 带会话 `tools/list` → `tools/call` → 上游收到期望
       路径/查询/头/凭据 → `DELETE` 后旧会话 404。
@@ -269,3 +273,4 @@ POST/PUT/PATCH/DELETE；`body_param` 必须指向 `in=body` 的参数。
 | v1.1 | header 参数允许连字符并做大小写不敏感去重；根前缀 `/` 覆盖全部路径；覆盖率 75% → 91.8%；新增 `make cover` / `cover-html`；文档三件套补齐 |
 | v1.2 | 容器化：多阶段 Dockerfile（非 root、健康检查、版本戳）、compose（网关 + 演示上游、只读根文件系统、回环发布）、`deploy/mcpx.docker.yaml`、`.env.example`、`make docker-build/compose-*`、`.github/workflows/release.yml`（release 触发：校验 → DockerHub 双架构镜像 + linux/macOS/Windows 二进制与 `SHA256SUMS.txt`） |
 | v1.3 | 接入示例与测试：`example/`（Python 标准库 notes 服务 + Streamable HTTP 客户端 + stdio 客户端 + 共享 `mcpx.example.yaml`，网关开 bearer）、`scripts/`（`example-lib.sh` + 两条一键测试，含 401 断言）、`make example-test-http/stdio/test`、`example/README{,_cn}.md` |
+| v1.4 | 覆盖率 91.8% → **100%**（165 个测试函数，全包 100%）：为不可达防御分支引入包内私有 seam（`randomRead` / `marshalJSON` / `newClient` 等构造器 / `newRequest` / CLI 的 exit、signal、listen、shutdown、stdioRun），删除恒假复核与重复分支；新增 `make cover-check` 与 `.github/workflows/ci.yml`（gofmt、vet、build、`test -race`、覆盖率门禁、coverage artifact） |

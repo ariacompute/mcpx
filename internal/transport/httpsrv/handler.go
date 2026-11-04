@@ -185,7 +185,7 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if h.opts.Server != nil && h.opts.Server.Tools != nil {
 		tools = h.opts.Server.Tools.Len()
 	}
-	payload, err := json.Marshal(map[string]any{
+	payload, err := marshalJSON(map[string]any{
 		"status":         "ok",
 		"version":        h.opts.Version,
 		"tools":          tools,
@@ -228,6 +228,10 @@ func (h *Handler) originAllowed(r *http.Request) bool {
 	return false
 }
 
+// marshalJSON is a seam: the health payload and the problem document are
+// fixed shapes of primitives, so their encoder only fails when it is replaced.
+var marshalJSON = json.Marshal
+
 func writeJSON(w http.ResponseWriter, status int, payload []byte) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -244,7 +248,7 @@ type problemDetail struct {
 }
 
 func writeProblem(w http.ResponseWriter, status int, code, message string) {
-	payload, err := json.Marshal(problem{Error: problemDetail{Code: code, Message: message}})
+	payload, err := marshalJSON(problem{Error: problemDetail{Code: code, Message: message}})
 	if err != nil {
 		http.Error(w, message, status)
 		return

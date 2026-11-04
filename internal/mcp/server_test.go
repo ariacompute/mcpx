@@ -302,6 +302,63 @@ func TestToolsCallWithoutArguments(t *testing.T) {
 	}
 }
 
+// unencodableTool returns a schema JSON cannot marshal, which is the only way
+// to reach the response-encoding failure arm.
+type unencodableTool struct{}
+
+func (unencodableTool) Name() string                { return "broken" }
+func (unencodableTool) Description() string         { return "not encodable" }
+func (unencodableTool) InputSchema() map[string]any { return map[string]any{"type": func() {}} }
+func (unencodableTool) Invoke(context.Context, map[string]any) (tool.Result, error) {
+	return tool.Result{}, nil
+}
+
+func TestUnencodableResponseIsDropped(t *testing.T) {
+	registry, err := tool.NewRegistry(unencodableTool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{
+		Tools:  registry,
+		Caller: &stubCaller{},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	if payload := server.Handle(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)); payload != nil {
+		t.Fatalf("payload = %s, want it dropped", payload)
+	}
+}
+
+func TestNegotiateWithoutAnySupportedVersion(t *testing.T) {
+	previous := DefaultProtocolVersions
+	t.Cleanup(func() { DefaultProtocolVersions = previous })
+	DefaultProtocolVersions = nil
+
+	server := &Server{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	response := exchange(t, server, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`)
+	result := response["result"].(map[string]any)
+	if result["protocolVersion"] != fallbackProtocolVersion {
+		t.Fatalf("version = %v, want %q", result["protocolVersion"], fallbackProtocolVersion)
+	}
+}
+
+func TestToolsCallWithoutCaller(t *testing.T) {
+	registry, err := tool.NewRegistry(stubTool{"a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Tools: registry, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	response := exchange(t, server, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"a"}}`)
+	if code := errorCode(t, response); code != CodeInternalError {
+		t.Fatalf("code = %d, want %d", code, CodeInternalError)
+	}
+}
+
+func TestLoggerFallsBackToTheDefault(t *testing.T) {
+	if (&Server{}).logger() != slog.Default() {
+		t.Fatal("a server without a logger should use the default one")
+	}
+}
+
 func TestNotificationsGetNoResponse(t *testing.T) {
 	server, caller := newTestServer(t, 0, "a")
 	for _, message := range []string{

@@ -69,10 +69,14 @@ func (t *Template) Params() []string { return t.params }
 // Expand substitutes escaped values. Values are percent escaped, so a value
 // can never introduce a new segment or a traversal.
 func (t *Template) Expand(values map[string]string) (string, error) {
-	var builder strings.Builder
+	// Build the escaped form that goes on the wire and the decoded form that
+	// validation inspects, in one pass. Unescaping the escaped form afterwards
+	// would only repeat work the loop already did.
+	var escapedForm, decodedForm strings.Builder
 	for _, seg := range t.segments {
 		if seg.param == "" {
-			builder.WriteString(seg.literal)
+			escapedForm.WriteString(seg.literal)
+			decodedForm.WriteString(seg.literal)
 			continue
 		}
 		value, ok := values[seg.param]
@@ -83,20 +87,15 @@ func (t *Template) Expand(values map[string]string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("upstream: {%s}: %w", seg.param, err)
 		}
-		builder.WriteString(escaped)
+		escapedForm.WriteString(escaped)
+		decodedForm.WriteString(strings.TrimSpace(value))
 	}
-	out := builder.String()
-	// Validate the decoded form: the expanded string legitimately contains the
-	// percent escapes produced above, while the decoded path must not contain
-	// a dot segment or a second slash.
-	decoded, err := url.PathUnescape(out)
-	if err != nil {
-		return "", fmt.Errorf("upstream: %q is not a valid path", out)
-	}
-	if err := ValidatePath(decoded); err != nil {
+	// The decoded path must not contain a dot segment or a second slash; the
+	// escaped form legitimately contains percent escapes.
+	if err := ValidatePath(decodedForm.String()); err != nil {
 		return "", err
 	}
-	return out, nil
+	return escapedForm.String(), nil
 }
 
 // escapePathValue rejects the two values that would survive PathEscape and

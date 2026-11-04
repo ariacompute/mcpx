@@ -217,6 +217,76 @@ func TestRegistryPageBoundaries(t *testing.T) {
 	}
 }
 
+func TestBuildSchemaCopiesDescriptions(t *testing.T) {
+	schema := BuildSchema([]Param{{Name: "q", In: "query", Description: "search text"}})
+	property := schema["properties"].(map[string]any)["q"].(map[string]any)
+	if property["description"] != "search text" {
+		t.Fatalf("property = %v, want the description", property)
+	}
+}
+
+func TestValidateNilArguments(t *testing.T) {
+	schema := map[string]any{
+		"type":                 "object",
+		"properties":           map[string]any{},
+		"additionalProperties": false,
+	}
+	if err := Validate(schema, nil); err != nil {
+		t.Fatalf("Validate(nil args) = %v, want nil", err)
+	}
+}
+
+func TestValidateEnumEdgeCases(t *testing.T) {
+	// A matching enum member is accepted.
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"tag": map[string]any{"enum": []any{"a", "b"}},
+		},
+	}
+	if err := Validate(schema, map[string]any{"tag": "b"}); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+
+	// A non-scalar argument cannot match an enum.
+	schema = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"tag": map[string]any{"enum": []any{"a", "b"}},
+		},
+	}
+	if err := Validate(schema, map[string]any{"tag": []any{"a"}}); err == nil || !strings.Contains(err.Error(), "not a scalar") {
+		t.Fatalf("err = %v, want a scalar error", err)
+	}
+
+	// A non-scalar enum candidate is skipped rather than matching.
+	unmatchable := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"tag": map[string]any{"enum": []any{map[string]any{"a": 1}}},
+		},
+	}
+	if err := Validate(unmatchable, map[string]any{"tag": "a"}); err == nil {
+		t.Fatal("expected the non-scalar candidate not to match")
+	}
+}
+
+func TestValidateNumericWidening(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"count": map[string]any{"type": "integer"},
+			"ratio": map[string]any{"type": "number"},
+		},
+	}
+	if err := Validate(schema, map[string]any{"count": float32(3), "ratio": 2}); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if err := Validate(schema, map[string]any{"count": true}); err == nil {
+		t.Fatal("a boolean is not a number")
+	}
+}
+
 func TestValidateTypeCoverage(t *testing.T) {
 	schema := map[string]any{
 		"type": "object",

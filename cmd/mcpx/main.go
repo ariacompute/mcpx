@@ -23,8 +23,19 @@ import (
 	"mcpx/internal/version"
 )
 
+// The seams below let tests drive the CLI without terminating the test
+// process or opening a real socket. Production always uses the standard
+// library.
+var (
+	exitProcess    = os.Exit
+	notifyContext  = signal.NotifyContext
+	listenAndServe = func(server *http.Server) error { return server.ListenAndServe() }
+	shutdownServer = func(server *http.Server, ctx context.Context) error { return server.Shutdown(ctx) }
+	stdioRun       = stdioTransport.Run
+)
+
 func main() {
-	os.Exit(run(os.Args[1:]))
+	exitProcess(run(os.Args[1:]))
 }
 
 func run(args []string) int {
@@ -166,7 +177,7 @@ func runServe(args []string) int {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	serveErr := make(chan error, 1)
@@ -177,7 +188,7 @@ func runServe(args []string) int {
 			"tools", gw.Registry().Len(),
 			"auth", token != "",
 		)
-		serveErr <- server.ListenAndServe()
+		serveErr <- listenAndServe(server)
 	}()
 
 	select {
@@ -191,7 +202,7 @@ func runServe(args []string) int {
 		logger.Info("shutting down", "grace", cfg.Server.ShutdownGrace.String())
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace.Std())
 		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
+		if err := shutdownServer(server, shutdownCtx); err != nil {
 			logger.Error("graceful shutdown failed", "error", err)
 			_ = server.Close()
 			return 1
@@ -230,11 +241,11 @@ func runStdio(args []string) int {
 		return 1
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	server := newMCPServer(cfg, gw, logger)
-	if err := stdioTransport.Run(ctx, os.Stdin, os.Stdout, stdioTransport.Options{
+	if err := stdioRun(ctx, os.Stdin, os.Stdout, stdioTransport.Options{
 		Server: server,
 		Logger: logger,
 	}); err != nil {

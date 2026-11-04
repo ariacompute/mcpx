@@ -242,9 +242,34 @@ Go 等自带信任库需升级。mcpx 作为网关会向上游（Streamable HTTP
   代理造成的在线探测假阳性。
 - 构建后核验：`docker run --rm <mcpx-image> scripts/check-emudhra.sh /etc/ssl/certs/ca-certificates.crt`。
 
+## 阶段 12 — 覆盖率 91.8% → 100% 与 CI 门禁
+
+| 包 | 前 | 后 | 主要补充 |
+| --- | --- | --- | --- |
+| cmd | 83.6% | 100% | exit / notify / listen / shutdown / stdioRun seam；监听成功、`ErrServerClosed`、监听失败、优雅退出成功与失败、stdio 运行错误 |
+| config | 95.7% | 100% | `Load` 内的解码失败、auth/param 默认值、九类校验异常、passthrough 无 methods |
+| gateway | 89.2% | 100% | 四个构造器 seam、重复占位符（真实配置可达） |
+| mcp | 94.8% | 100% | 响应编码失败、空协议列表兜底、nil Caller、默认 logger |
+| tool | 94.5% | 100% | description、nil args、枚举匹配与非标量、float32/int/bool |
+| upstream | 90.4% | 100% | 重定向三态、静态 headers、Content-Type 三态、读体失败、`%25` base path、operation 绑定、passthrough 映射、模板 `//` |
+| httpsrv | 90.0% | 100% | 405、body 读错误、rand/marshal 失败、Origin 解析失败、session 空 id 与过期清理 |
+| stdio | 90.4% | 100% | nil logger、通知、跨读缓冲长行、`Write` 内失败 |
+| version | 100% | 100% | — |
+
+- 测试规模：165 个测试函数；`go test -race ./...` 全绿；`make cover-check` 全包 100%（连跑 3 次稳定）。
+- seam（包内私有，默认值即标准库调用；测试串行替换并在 `t.Cleanup` 还原）：
+  - `cmd/mcpx`：`exitProcess` / `notifyContext` / `listenAndServe` / `shutdownServer` / `stdioRun`
+  - `httpsrv`：`randomRead`（会话 id）/ `marshalJSON`（health 与 problem 文档）
+  - `gateway`：`newClient` / `newOperation` / `newPassthrough` / `newRegistry`
+  - `upstream`：`newRequest`（请求构造）
+- 删除恒假/冗余分支：`Client.resolve` 末尾对 target 的 scheme/host 复核（target 由 base 构造）、`Template.Expand` 的 `PathUnescape` 失败分支（改为同时构建 escaped 与 decoded 两种形式）、stdio 的 `WriteByte` 分支（响应与换行合并为一次 `Write`）。
+- `Makefile`：`cover` 加 `-count=1`；新增 `cover-check`（解析 `go tool cover -func` 的 `total:`，不等于 `100.0%` 即失败）。
+- `.github/workflows/ci.yml`（新增）：push(main) / pull_request / workflow_dispatch；`gofmt`、`go vet`、`go build`、`go test -race`、`make cover-check`，并上传 `coverage.out`；无 secrets、不跑 Docker / 示例端口。
+- 文档：README{,_cn} 增加 CI 徽章、`make cover-check` 与 100% 说明；requirements §7/§8、AGENTS 测试要求同步。
+
 ## 后续待办
 
 - [ ] 可选指标端点（`/metrics`）与请求耗时直方图；继续保持零第三方依赖需自实现。
 - [ ] 上游重试策略（仅幂等方法、有上限、可关闭）与熔断。
 - [ ] 配置 schema 的 `$ref`/默认值文档生成（当前 README 手写）。
-- [ ] 覆盖 `runServe` 成功路径与优雅退出（需要可注入监听器或在测试里发送信号）。
+- [x] 覆盖 `runServe` 成功路径与优雅退出（已通过 `notifyContext` / `listenAndServe` / `shutdownServer` 注入覆盖）。

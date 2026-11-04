@@ -7,6 +7,10 @@ import (
 	"time"
 )
 
+// randomRead is a seam: session ids come from crypto/rand, and the only way to
+// exercise the failure arm is to replace the reader.
+var randomRead = rand.Read
+
 // sessionStore keeps MCP sessions in memory. A session carries no state the
 // gateway needs besides "this client completed the handshake", so losing the
 // map on restart only costs the client a new initialize.
@@ -31,7 +35,7 @@ func newSessionStore(ttl time.Duration) *sessionStore {
 // Create registers a new session and returns its id.
 func (s *sessionStore) Create() (string, error) {
 	raw := make([]byte, 24)
-	if _, err := rand.Read(raw); err != nil {
+	if _, err := randomRead(raw); err != nil {
 		return "", err
 	}
 	id := base64.RawURLEncoding.EncodeToString(raw)
