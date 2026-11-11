@@ -1,10 +1,56 @@
+<div align="center">
+<a name="readme-top"></a>
+
 # mcpx
 
-[English](README.md) | [中文](README_cn.md)
+**把任意 HTTP 服务变成 MCP 工具的网关**
 
-MCP 网关：用一份声明式配置，把**任意 HTTP 服务**发布成 MCP 工具，同时对外提供 MCP
-服务端出口（Streamable HTTP 与 stdio）。名字沿用 nginx 那种短小写风格 —— nginx 是
-"engine-x"，这里是 "MCP-x"。
+用一份声明式配置，把**任意 HTTP 服务**发布成 MCP 工具，同时对外提供 MCP<br/>
+服务端出口（Streamable HTTP 与 stdio）。名字沿用 nginx 那种短小写风格 ——<br/>
+"MCP-x"。它和 nginx 是**形态参照**而非依赖：upstream 声明地址、前缀白名单决定<br/>
+"能去哪儿"、限长与超时决定"能待多久"，但协议换成了 MCP、配置换成了 YAML。
+
+[English](./README.md) · **简体中文** · [文档](./requirements.md)
+
+[![][release-shield]][release-link] [![][go-shield]][go-link] [![][license-shield]][license-link] [![][lastcommit-shield]][lastcommit-link]
+<br/>
+[![][transports-shield]][transports-link] [![][tests-shield]][tests-link] [![][docs-shield]][docs-link]
+</div>
+
+<details>
+<summary><kbd>Table of contents</kbd></summary>
+
+#### TOC
+
+**上手**
+
+- [✨ 功能](#-功能)
+- [🚀 快速开始](#-快速开始)
+- [🔌 接入方式](#-接入方式)
+
+**配置与服务**
+
+- [🔧 配置](#-配置)
+- [🧰 示例](#-示例)
+- [🛳 部署](#-部署)
+
+**内部机制**
+
+- [🔐 安全模型](#-安全模型)
+- [📊 错误语义](#-错误语义)
+- [🔨 开发](#-开发)
+
+**信任与治理**
+
+- [📚 文档](#-文档)
+- [📝 许可证](#-许可证)
+- [🤝 工程约定](#-工程约定)
+
+</details>
+
+## ✨ 功能
+
+MCP 网关：用一份声明式配置，把**任意 HTTP 服务**发布成 MCP 工具，同时对外提供 MCP 服务端出口（Streamable HTTP 与 stdio）。名字沿用 nginx 那种短小写风格 —— nginx 是 "engine-x"，这里是 "MCP-x"。
 
 ```
 MCP 客户端 ──HTTP POST /mcp──┐
@@ -13,11 +59,21 @@ MCP 客户端 ──HTTP POST /mcp──┐
                              │  └─ 每个 upstream 一个受限透传工具
 ```
 
-和 nginx 的关系是**形态参照**而不是依赖：upstream 声明地址、前缀白名单决定"能去哪儿"、
-限长与超时决定"能待多久"，但协议换成了 MCP，配置换成了 YAML。网关不内置 TLS、不缓存、
-不热重载 —— 这三件事交给前置 nginx 与一次重启。
+和 nginx 的关系是**形态参照**而不是依赖：upstream 声明地址、前缀白名单决定"能去哪儿"、限长与超时决定"能待多久"，但协议换成了 MCP，配置换成了 YAML。网关不内置 TLS、不缓存、不热重载 —— 这三件事交给前置 nginx 与一次重启。
 
-## 快速开始
+- 🔌 **两种 MCP 传输** —— 同一份工具集同时以 Streamable HTTP（`POST /mcp`、会话、`Mcp-Session-Id`）与 stdio（按行 JSON-RPC）对外提供，共用一份配置。
+- 🧩 **一份配置，两类工具** —— 每个 `operation` 变成一个具名工具（`<upstream>_<operation>`）；每个 upstream 另有一个受白名单约束的受限透传工具。
+- 🛡 **配置失败即关机** —— 未知字段、非法工具名、透传白名单为空、凭据变量名不合法，一律启动失败，绝不静默放过。
+- 🔒 **配置里没有密钥** —— 凭据只以环境变量名出现，运行时才读取；日志与错误消息不打印任何 token，敏感头统一脱敏。
+- 🪶 **零框架** —— Go 1.27.3、标准库 `net/http`，唯一第三方依赖是 `gopkg.in/yaml.v3`，单一静态二进制。
+
+<div align="right">
+
+[![][back-to-top]](#readme-top)
+
+</div>
+
+## 🚀 快速开始
 
 ```bash
 # 1. 先构建一次：bin/mcpx 是静态二进制，git 版本戳（version / commit / date）通过
@@ -49,54 +105,65 @@ export PETSTORE_TOKEN=...
 ./bin/mcpx stdio -c mcpx.local.yaml
 ```
 
-`check` 通过即代表：URL 合法、路径模板可编译、工具名无冲突、透传前缀非空、凭据变量名
-合法。任何一项失败都会带着位置报错并拒绝启动。
+`check` 通过即代表：URL 合法、路径模板可编译、工具名无冲突、透传前缀非空、凭据变量名合法。任何一项失败都会带着位置报错并拒绝启动。
 
-### Docker Compose
+<div align="right">
 
-```bash
-cp .env.example .env  # 填 MCPX_TOKEN，例如 openssl rand -hex 24
-docker compose up -d --build
-curl -s http://127.0.0.1:8848/healthz
-```
+[![][back-to-top]](#readme-top)
 
-镜像为两阶段构建（静态二进制跑在 Alpine、非 root uid 10001），容器只读挂载
-`deploy/mcpx.docker.yaml`。该配置监听 `0.0.0.0:8848`（容器内的 `127.0.0.1` 从宿主机
-不可达），并指向 compose 里的 `demo` 服务，所以新栈启动后就有一个可调用工具。换成
-自己的配置时用 `MCPX_CONFIG_FILE`，务必保留 `0.0.0.0` 监听地址。
+</div>
 
-端口默认只发布到宿主机 `127.0.0.1`；要改 `MCPX_BIND` 前请先加反向代理。缺少
-`MCPX_TOKEN` 时进程打印 `authentication misconfigured` 后退出，但 `docker compose down`
-仍可正常清理。
+## 🔌 接入方式
 
-**已发布镜像。** 在 GitHub 上发布 release 会触发 `.github/workflows/release.yml`，
-把 `ariacompute/mcpx` 推送到 DockerHub：该 release 的 `:<version>` 加最新的 `:latest`，
-同时覆盖 linux/amd64 与 linux/arm64。release 的版本与 commit 以构建参数注入镜像，所以
-镜像 tag 与 `/healthz` 报告的 `version@commit` 永远一致。工作流需要两个仓库 secret：
-`DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`。
+### Streamable HTTP
 
 ```bash
-docker pull ariacompute/mcpx:<version>  # 例如 1.2.3（release tag 去掉 v）
-docker run --rm -e MCPX_TOKEN=$(openssl rand -hex 24) \
-  -p 127.0.0.1:8848:8848 ariacompute/mcpx:1.2.3
+curl -sS http://127.0.0.1:8848/mcp \
+  -H "Authorization: Bearer $MCPX_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"curl","version":"1"}}}'
 ```
 
-**二进制包。** 同一个 release 还附带 linux/amd64、linux/arm64、darwin/amd64、
-darwin/arm64、windows/amd64 的独立压缩包，以及覆盖全部的单个 `SHA256SUMS.txt`：
+响应头 `Mcp-Session-Id` 必须出现在后续每个请求上；`notifications/*` 返回 `202` 无正文；`DELETE /mcp` 终止会话；`GET /mcp` 返回 `405`（本网关不主动推送）。`/healthz` 不需要鉴权，返回版本、工具数与会话数。
 
-```bash
-tar xzf mcpx-1.2.3-linux-amd64.tar.gz  # mcpx + LICENSE
-./mcpx version                         # mcpx 1.2.3 (<commit>) ...
+MCP 客户端配置片段（例如 Claude Desktop / IDE 插件）：
+
+```json
+{
+  "mcpServers": {
+    "mcpx": {
+      "type": "http",
+      "url": "http://127.0.0.1:8848/mcp",
+      "headers": { "Authorization": "Bearer ${MCPX_TOKEN}" }
+    }
+  }
+}
 ```
 
-macOS 包**未做代码签名与公证**（未配置证书），下载后会被 Gatekeeper 隔离，可
-`xattr -d com.apple.quarantine mcpx` 或直接源码构建。解包前先用
-`sha256sum -c SHA256SUMS.txt`（macOS 上 `shasum -a 256 -c`）校验。
+### stdio
 
-## 配置
+```json
+{
+  "mcpServers": {
+    "mcpx": {
+      "command": "/path/to/bin/mcpx",
+      "args": ["stdio", "-c", "/path/to/mcpx.local.yaml"]
+    }
+  }
+}
+```
 
-主配置 YAML，**同结构的 JSON 也接受**（同一套解码路径）。未知字段直接报错，避免把
-`allow_prefixs` 这种拼写错误静默解释成"不限制"。
+stdout 是协议通道，所有日志走 stderr；读到 EOF 即正常退出。
+
+<div align="right">
+
+[![][back-to-top]](#readme-top)
+
+</div>
+
+## 🔧 配置
+
+主配置 YAML，**同结构的 JSON 也接受**（同一套解码路径）。未知字段直接报错，避免把 `allow_prefixs` 这种拼写错误静默解释成"不限制"。
 
 ```yaml
 server:
@@ -160,69 +227,25 @@ upstreams:
 | `operation.input_schema` | 覆盖自动派生的 JSON Schema，仅影响展示，不影响实际绑定 |
 | `passthrough` | 受限通用工具；`allow_prefixes` 为空时启动失败（宁可不可用，也不当开放代理） |
 
-工具名规则：`<upstream>_<operation>`，大小写不敏感唯一；冲突、非法字符都会启动失败。
-`upstream.name` 必须匹配 `^[a-z][a-z0-9_-]{0,31}$`。
+工具名规则：`<upstream>_<operation>`，大小写不敏感唯一；冲突、非法字符都会启动失败。`upstream.name` 必须匹配 `^[a-z][a-z0-9_-]{0,31}$`。
 
 ### 参数如何变成请求
 
 - `path`：按 `{name}` 替换，值经 `url.PathEscape`；值本身是 `.`/`..` 时拒绝。
 - `query`：数组值展开为重复参数；数字/布尔按字面量渲染（`2` 而不是 `2.000000`）。
-- `header`：参数名就是头名（允许 `X-Trace` 这类连字符写法，大小写不敏感去重）；
-  `Authorization`、`Cookie`、`Host`、`Content-Length` 等保留头一律拒绝，避免调用方
-  绕过配置里的凭据。
-- `body`：字符串原样发送（`text/plain`），其它类型 JSON 序列化（`application/json`）；
-  未声明 `schema.type` 的 body 参数接受任意 JSON 值。
-- 未声明的参数、缺失的必填参数、类型不匹配、枚举越界都会返回 `isError: true` 的结果，
-  并且**不会**发往上游。
+- `header`：参数名就是头名（允许 `X-Trace` 这类连字符写法，大小写不敏感去重）；`Authorization`、`Cookie`、`Host`、`Content-Length` 等保留头一律拒绝，避免调用方绕过配置里的凭据。
+- `body`：字符串原样发送（`text/plain`），其它类型 JSON 序列化（`application/json`）；未声明 `schema.type` 的 body 参数接受任意 JSON 值。
+- 未声明的参数、缺失的必填参数、类型不匹配、枚举越界都会返回 `isError: true` 的结果，并且**不会**发往上游。
 
-## 接入方式
+<div align="right">
 
-### Streamable HTTP
+[![][back-to-top]](#readme-top)
 
-```bash
-curl -sS http://127.0.0.1:8848/mcp \
-  -H "Authorization: Bearer $MCPX_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"curl","version":"1"}}}'
-```
+</div>
 
-响应头 `Mcp-Session-Id` 必须出现在后续每个请求上；`notifications/*` 返回 `202` 无正文；
-`DELETE /mcp` 终止会话；`GET /mcp` 返回 `405`（本网关不主动推送）。`/healthz` 不需要鉴权，
-返回版本、工具数与会话数。
+## 🧰 示例
 
-MCP 客户端配置片段（例如 Claude Desktop / IDE 插件）：
-
-```json
-{
-  "mcpServers": {
-    "mcpx": {
-      "type": "http",
-      "url": "http://127.0.0.1:8848/mcp",
-      "headers": { "Authorization": "Bearer ${MCPX_TOKEN}" }
-    }
-  }
-}
-```
-
-### stdio
-
-```json
-{
-  "mcpServers": {
-    "mcpx": {
-      "command": "/path/to/bin/mcpx",
-      "args": ["stdio", "-c", "/path/to/mcpx.local.yaml"]
-    }
-  }
-}
-```
-
-stdout 是协议通道，所有日志走 stderr；读到 EOF 即正常退出。
-
-## 示例
-
-`example/` 是一对可直接运行的 Python 示例，不用装任何依赖：一个对 MCP 一无所知的
-notes REST 服务，加两个 MCP 客户端（Streamable HTTP 与 stdio），共用同一份配置。
+`example/` 是一对可直接运行的 Python 示例，不用装任何依赖：一个对 MCP 一无所知的 notes REST 服务，加两个 MCP 客户端（Streamable HTTP 与 stdio），共用同一份配置。
 
 ```bash
 # 1. 上游（终端 1）：普通 REST 服务，与 MCP 无关。这些路由就是 mcpx 要发布的接口，
@@ -244,29 +267,84 @@ python3 example/python-http/client.py --url http://127.0.0.1:18848/mcp
 python3 example/python-stdio/client.py --mcpx ./bin/mcpx --config example/mcpx.example.yaml
 ```
 
-两个客户端都走完整会话（握手、`tools/list`、`tools/call`、两种失败形态、`DELETE` 或
-EOF），最后打印 `PASS`。配置在演示什么见 `example/README_cn.md`；连带断言与清理的
-一条命令版本：
+两个客户端都走完整会话（握手、`tools/list`、`tools/call`、两种失败形态、`DELETE` 或 EOF），最后打印 `PASS`。配置在演示什么见 `example/README_cn.md`；连带断言与清理的一条命令版本：
 
 ```bash
 make example-test  # 两种传输都跑；EXAMPLE_{UPSTREAM,GATEWAY}_PORT 可改端口
 ```
 
-示例网关保留 `server.auth.scheme: bearer`（与容器同一姿态），启动必须有 `MCPX_TOKEN`；
-测试目标在变量未设置时会填一个只在本机回环用的占位值。
+示例网关保留 `server.auth.scheme: bearer`（与容器同一姿态），启动必须有 `MCPX_TOKEN`；测试目标在变量未设置时会填一个只在本机回环用的占位值。
 
-## 安全模型
+<div align="right">
+
+[![][back-to-top]](#readme-top)
+
+</div>
+
+## 🛳 部署
+
+支持两条路径：自己用前置代理跑二进制，或用 Docker Compose 拉起容器栈。
+
+### `A` Docker Compose
+
+```bash
+cp .env.example .env  # 填 MCPX_TOKEN，例如 openssl rand -hex 24
+docker compose up -d --build
+curl -s http://127.0.0.1:8848/healthz
+```
+
+镜像为两阶段构建（静态二进制跑在 Alpine、非 root uid 10001），容器只读挂载 `deploy/mcpx.docker.yaml`。该配置监听 `0.0.0.0:8848`（容器内的 `127.0.0.1` 从宿主机不可达），并指向 compose 里的 `demo` 服务，所以新栈启动后就有一个可调用工具。换成自己的配置时用 `MCPX_CONFIG_FILE`，务必保留 `0.0.0.0` 监听地址。
+
+端口默认只发布到宿主机 `127.0.0.1`；要改 `MCPX_BIND` 前请先加反向代理。缺少 `MCPX_TOKEN` 时进程打印 `authentication misconfigured` 后退出，但 `docker compose down` 仍可正常清理。
+
+### `B` 已发布镜像与二进制包
+
+**已发布镜像。** 在 GitHub 上发布 release 会触发 `.github/workflows/release.yml`，把 `ariacompute/mcpx` 推送到 DockerHub：该 release 的 `:<version>` 加最新的 `:latest`，同时覆盖 linux/amd64 与 linux/arm64。release 的版本与 commit 以构建参数注入镜像，所以镜像 tag 与 `/healthz` 报告的 `version@commit` 永远一致。工作流需要两个仓库 secret：`DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`。
+
+```bash
+docker pull ariacompute/mcpx:<version>  # 例如 1.2.3（release tag 去掉 v）
+docker run --rm -e MCPX_TOKEN=$(openssl rand -hex 24) \
+  -p 127.0.0.1:8848:8848 ariacompute/mcpx:1.2.3
+```
+
+**二进制包。** 同一个 release 还附带 linux/amd64、linux/arm64、darwin/amd64、darwin/arm64、windows/amd64 的独立压缩包，以及覆盖全部的单个 `SHA256SUMS.txt`：
+
+```bash
+tar xzf mcpx-1.2.3-linux-amd64.tar.gz  # mcpx + LICENSE
+./mcpx version                         # mcpx 1.2.3 (<commit>) ...
+```
+
+macOS 包**未做代码签名与公证**（未配置证书），下载后会被 Gatekeeper 隔离，可 `xattr -d com.apple.quarantine mcpx` 或直接源码构建。解包前先用 `sha256sum -c SHA256SUMS.txt`（macOS 上 `shasum -a 256 -c`）校验。
+
+<div align="right">
+
+[![][back-to-top]](#readme-top)
+
+</div>
+
+## 🔐 安全模型
 
 - 默认只监听 `127.0.0.1`；对外暴露请前置 nginx 并启用 `server.auth`。
-- 路径永远由"配置里的 base 路径 + 配置里的模板"拼出：拒绝绝对 URL、`//host`、`..`、
-  跨主机重定向；透传路径按**段**匹配前缀（`/api/v1` 不会放行 `/api/v1x`）。
+- 路径永远由"配置里的 base 路径 + 配置里的模板"拼出：拒绝绝对 URL、`//host`、`..`、跨主机重定向；透传路径按**段**匹配前缀（`/api/v1` 不会放行 `/api/v1x`）。
 - 请求体、响应体、单次调用都有上限与超时；响应被截断时结果里明确标注。
-- 凭据只以环境变量名出现在配置中，运行时读取；日志与错误消息不打印 token，
-  敏感头统一脱敏。
-- 上游非 2xx 不抛协议错误，而是 `isError: true` + 状态码 + 截断后的正文，
-  让模型自己决定下一步。
+- 凭据只以环境变量名出现在配置中，运行时读取；日志与错误消息不打印 token，敏感头统一脱敏。
+- 上游非 2xx 不抛协议错误，而是 `isError: true` + 状态码 + 截断后的正文，让模型自己决定下一步。
 
-## 错误语义
+### 明确不做
+
+- 配置热重载（重启即可，避免读到半写文件）
+- 多租户与配额
+- 请求缓存（网关不替上游做一致性决策）
+- 内置 TLS（交给前置 nginx）
+- 动态发现上游（工具集在启动时固定，`tools/list` 因此稳定可缓存）
+
+<div align="right">
+
+[![][back-to-top]](#readme-top)
+
+</div>
+
+## 📊 错误语义
 
 | 场景 | 返回 |
 | --- | --- |
@@ -277,7 +355,13 @@ make example-test  # 两种传输都跑；EXAMPLE_{UPSTREAM,GATEWAY}_PORT 可改
 | 上游非 2xx、超时、越权路径、参数校验失败 | `tools/call` 的 `isError: true` 结果 |
 | 未鉴权 / Origin 拒绝 / 会话缺失 / 会话过期 / 请求过大 | HTTP 401 / 403 / 400 / 404 / 413 |
 
-## 开发
+<div align="right">
+
+[![][back-to-top]](#readme-top)
+
+</div>
+
+## 🔨 开发
 
 ```bash
 make build         # bin/mcpx（-ldflags 注入 version/commit/date）
@@ -307,22 +391,63 @@ example             Python notes 服务 + HTTP/stdio 两种 MCP 客户端
 scripts             example/ 的一键测试脚本（bash）
 ```
 
-## 明确不做
+<div align="right">
 
-- 配置热重载（重启即可，避免读到半写文件）
-- 多租户与配额
-- 请求缓存（网关不替上游做一致性决策）
-- 内置 TLS（交给前置 nginx）
-- 动态发现上游（工具集在启动时固定，`tools/list` 因此稳定可缓存）
+[![][back-to-top]](#readme-top)
 
-## 许可证
+</div>
+
+## 📝 许可证
 
 MIT.
 
-## 工程约定
+<div align="right">
+
+[![][back-to-top]](#readme-top)
+
+</div>
+
+## 🤝 工程约定
 
 本仓库遵循 Harness Engineering：
 
 - [`AGENTS.md`](AGENTS.md)：Agent 工程上下文入口与目录索引
 - [`requirements.md`](requirements.md)：需求规格（功能边界 / 异常 / 验收，人审后编码）
 - [`task.md`](task.md)：实施清单
+
+<div align="right">
+
+[![][back-to-top]](#readme-top)
+
+</div>
+
+---
+
+<div align="center">
+
+Copyright © 2026 [ariacompute][org]. <br/>
+This project is [MIT](./LICENSE) licensed.
+
+</div>
+
+<!-- 链接定义 -->
+
+[org]: https://github.com/ariacompute
+
+[release-shield]: https://img.shields.io/github/v/release/ariacompute/mcpx?style=flat-square&labelColor=black&color=555
+[release-link]: https://github.com/ariacompute/mcpx/releases
+[go-shield]: https://img.shields.io/github/go-mod/go-version/ariacompute/mcpx?style=flat-square&labelColor=black&color=555
+[go-link]: ./go.mod
+[license-shield]: https://img.shields.io/github/license/ariacompute/mcpx?style=flat-square&labelColor=black&color=555
+[license-link]: ./LICENSE
+[lastcommit-shield]: https://img.shields.io/github/last-commit/ariacompute/mcpx?style=flat-square&labelColor=black&color=555
+[lastcommit-link]: https://github.com/ariacompute/mcpx/commits
+
+[transports-shield]: https://img.shields.io/badge/MCP_transports-HTTP%2Bstdio-555?style=flat-square&labelColor=black
+[transports-link]: #-接入方式
+[tests-shield]: https://img.shields.io/badge/tests-go_test-555?style=flat-square&labelColor=black
+[tests-link]: ./Makefile
+[docs-shield]: https://img.shields.io/badge/docs-requirements-555?style=flat-square&labelColor=black
+[docs-link]: ./requirements.md
+
+[back-to-top]: https://img.shields.io/badge/-BACK_TO_TOP-151515?style=flat-square
