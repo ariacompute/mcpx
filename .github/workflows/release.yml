@@ -3,17 +3,22 @@ name: Release
 # Publish an mcpx release. Three jobs:
 #
 #   verify     gofmt / go vet / go test -race, gate for the two below
-#   image      container image on DockerHub (buildx: linux/amd64 + linux/arm64)
+#   image      container image on DockerHub, Quay.io and GHCR
+#              (buildx: linux/amd64 + linux/arm64)
 #   binaries   linux / macOS / Windows archives attached to the GitHub release
 #
 # Trigger is a *published* GitHub release, not a tag push: the assets land on a
 # release somebody wrote notes for, and `gh release create` / the web UI both
 # work the same. The release's tag is the single source of the version.
 #
-# Image:
+# Images (all published from the same multi-arch build):
 #
-#   ariacompute/mcpx:<version>   pinned to that release
-#   ariacompute/mcpx:latest      whatever was released last
+#   ariacompute/mcpx:<version>           pinned to that release (DockerHub)
+#   ariacompute/mcpx:latest              whatever was released last (DockerHub)
+#   quay.io/ariacompute/mcpx:<version>   pinned to that release (Quay.io)
+#   quay.io/ariacompute/mcpx:latest      whatever was released last (Quay.io)
+#   ghcr.io/ariacompute/mcpx:<version>   pinned to that release (GHCR)
+#   ghcr.io/ariacompute/mcpx:latest      whatever was released last (GHCR)
 #
 # The tag carries a "v" prefix (`v1.2.0`) but the image tag and the archives use
 # the bare version (`1.2.0`), which is also the value stamped into the binary.
@@ -30,6 +35,9 @@ name: Release
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
 #   - DOCKERHUB_USERNAME: DockerHub account / org name
 #   - DOCKERHUB_TOKEN:    DockerHub access token with write permission
+#   - QUAY_USERNAME:      Quay.io account / org name
+#   - QUAY_TOKEN:         Quay.io access token with write permission
+#   - ARIACOMPUTE_TOKEN:  GitHub PAT with packages:write, used to push to GHCR
 #
 # No proxy is needed on a runner: the Dockerfile already retries `go mod
 # download` with the proxy variables cleared, which is what works with direct
@@ -49,6 +57,8 @@ concurrency:
 env:
   GO_VERSION: "1.27"
   IMAGE: ariacompute/mcpx
+  QUAY_IMAGE: quay.io/ariacompute/mcpx
+  GHCR_IMAGE: ghcr.io/ariacompute/mcpx
   # Upstream module mirror; the Dockerfile default (goproxy.cn) is for
   # developer machines, not for a runner with direct internet.
   GOPROXY: https://proxy.golang.org,direct
@@ -95,6 +105,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write # needed to push to GHCR
     steps:
       - name: Checkout the release tag
         uses: actions/checkout@v4
@@ -140,6 +151,20 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Login to Quay.io
+        uses: docker/login-action@v3
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_TOKEN }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.ARIACOMPUTE_TOKEN }}
 
       # Names must match the ARGs in the Dockerfile exactly, otherwise the binary
       # silently keeps the dev / unknown sentinels.
@@ -215,6 +240,10 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
             ${{ env.IMAGE }}:latest
+            ${{ env.QUAY_IMAGE }}:${{ steps.meta.outputs.version }}
+            ${{ env.QUAY_IMAGE }}:latest
+            ${{ env.GHCR_IMAGE }}:${{ steps.meta.outputs.version }}
+            ${{ env.GHCR_IMAGE }}:latest
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
             COMMIT=${{ steps.meta.outputs.commit }}
@@ -237,10 +266,12 @@ jobs:
       - name: Summary
         run: |
           {
-            echo "### mcpx image"
+            echo "### mcpx images"
             echo ""
             echo '```'
             echo "docker pull ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}"
+            echo "docker pull ${{ env.QUAY_IMAGE }}:${{ steps.meta.outputs.version }}"
+            echo "docker pull ${{ env.GHCR_IMAGE }}:${{ steps.meta.outputs.version }}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
